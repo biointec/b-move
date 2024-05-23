@@ -6,7 +6,7 @@ Unlike the r-index, the [move structure](https://drops.dagstuhl.de/entities/docu
 
 ## Prerequisites
 
-This package requires a number of packages to be installed on your system. 
+b-move requires a number of packages to be installed on your system. 
 
 Required: 
 * CMake (recommended minimum version 3.10)
@@ -57,17 +57,13 @@ b-move can align patterns to a bidirectional move structure. To do this, you nee
 
 
 ### bmove-build
- * The bmove-build executable constructs bidirectional move structures based on the input data.
- * Usage:
- * ./bmove-build <base filename>
- * Options:
- * -v: Verbose output
-To build a b-move index, only the search text (the pan-genome) is required: run the following command in the `build` folder.
+
+To build a b-move index, only the search text (the pan-genome) is required: run the following command in the `build` folder. The index can be built immediately from fasta files. The basefile parameter also determines where the index will be stored. 
+
 ```bash
 ./bmove-build <base filename>
 ```
 
-The index can also be built immediately from fasta files. The basefile parameter also determines where the index will be stored. 
 
 Details:
 
@@ -79,11 +75,13 @@ Usage: ./bmove-build <base filename>
 ```
  
 ### bmove-locate
-bmove-locate executable supports lossless approximate pattern matching using search schemes (see [Columba](https://github.com/biointec/columba)). b-move can align reads in a fasta (`.FASTA`, `.fasta`, `.fa`) or fastq (`.fq`, `.fastq`) format. Alignments are written in SAM format (`.sam`).To align your reads, use the following command: 
+bmove-locate executable supports lossless approximate pattern matching using search schemes (see [Columba](https://github.com/biointec/columba)). b-move can align reads in a fasta (`.FASTA`, `.fasta`, `.fa`) or fastq (`.fq`, `.fastq`) format. Alignments are written to SAM format (`.sam`).To align your reads, use the following command: 
 
 ```bash
 ./bmove-locate [options] basefilename readfile.[ext]
 ```
+
+Note that currently in most cases, the following search scheme option is most efficient: `-ss custom b-move/search_schemes/multiple_opt/individual_schemes/scheme1/` (see [here](https://doi.org/10.1007/978-1-0716-3989-4_11)).
 
 Details:
 ```
@@ -140,7 +138,7 @@ Following input files are required:
 ```
  
 ### bmove-benchmarkCharExt
-bmove-benchmarkCharExt executable benchmarks character extension during pattern matching. It outputs how many cycles one bidirectional character extension takes on average. To run an experiment, use the following command:
+bmove-benchmarkCharExt executable benchmarks bidirectional character extension during pattern matching. It outputs how many cycles one bidirectional character extension takes on average. To run an experiment, use the following command:
 
 ```bash
 ./bmove-benchmarkCharExt [options] basefilename readfile.[ext]
