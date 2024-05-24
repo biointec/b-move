@@ -2,7 +2,7 @@
 
 b-move is the first tool that constructs **bidirectional move structures** and supports **lossless approximate pattern matching** against them.
 
-Unlike the r-index, the [move structure](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ICALP.2021.101) supports very cache-efficient character extensions during pattern matching. The bidirectional move structure is an extension of the move structure that also indexes the reverse of the string. This allows for efficient pattern matching in both directions.
+The [move structure](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ICALP.2021.101) is a run-length compressed index structure that can represent a search text in O(r) space, where r is the number of runs in the Burrows-Wheeler Transform (BWT) of the text. Unlike the r-index, the move structure supports very cache-efficient character extensions during pattern matching. The bidirectional move structure is an extension of the move structure that also indexes the reverse of the string. This allows for efficient pattern matching in both directions.
 
 ## Prerequisites
 
