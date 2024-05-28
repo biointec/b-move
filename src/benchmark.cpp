@@ -138,7 +138,7 @@ void showUsage() {
             "                                     search schemes to choose from with \n"
             "                                     dynamic selection.\n\n"
             "[ext]\n"
-            "  One of the following: fq, fastq, FASTA, fasta, fa\n"
+            "  One of the following: fq, fastq, FASTA, fasta, fa\n\n"
             "Following input files are required:\n"
             "  <base filename>.cct:      character counts table\n"
             "  <base filename>.move:     move table of T\n"

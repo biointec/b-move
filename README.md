@@ -120,6 +120,7 @@ Details:
 
 [ext]
   One of the following: fq, fastq, FASTA, fasta, fa
+  
 Following input files are required:
   <base filename>.cct:      character counts table
   <base filename>.move:     move table of T
@@ -177,6 +178,7 @@ Details:
 
 [ext]
   One of the following: fq, fastq, FASTA, fasta, fa
+
 Following input files are required:
   <base filename>.cct:      character counts table
   <base filename>.move:     move table of T
