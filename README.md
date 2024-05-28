@@ -1,20 +1,27 @@
 # b-move
 
-b-move is the first tool that constructs **bidirectional move structures** and supports **lossless approximate pattern matching** against them.
+**b-move** is the first tool to construct **bidirectional move structures** and support **lossless approximate pattern matching** against them.
 
-The [move structure](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ICALP.2021.101) is a run-length compressed index structure that can represent a search text in O(r) space, where r is the number of runs in the Burrows-Wheeler Transform (BWT) of the text. Unlike the r-index, the move structure supports very cache-efficient character extensions during pattern matching. The bidirectional move structure is an extension of the move structure that also indexes the reverse of the string. This allows for efficient pattern matching in both directions.
+The [move structure](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ICALP.2021.101), introduced by Nishimoto and Tabei, is a run-length compressed index structure that represents a search text in $O(r)$ space, where $r$ is the number of runs in the Burrows-Wheeler Transform (BWT) of the text. Unlike the [r-index](https://github.com/nicolaprezza/r-index), the move structure supports very cache-efficient character extensions during pattern matching.
+
+**b-move** extends this concept by constructing a **bidirectional move structure**. This extension indexes both the forward and reverse of the string, enabling efficient bidirectional character extensions. This allows **b-move** to extend a pattern $P$ in both directions, i.e., to both $cP$ and $Pc$. This is particularly useful for lossless approximate pattern matching, where a pattern is matched to the index to find all occurrences in the text.
+
+### Key Features
+
+* **Efficient Bidirectional Search**: Supports fast, cache-efficient bidirectional character extensions in run-length compressed space.
+* **High Performance**: Achieves bidirectional character extensions up to 8 times faster than alternative bidirectional indices like the [br-index](https://github.com/U-Ar/br-index) (bidirectional r-index), significantly narrowing the performance gap with FM-index-based tools such as [Columba](https://github.com/biointec/columba).
+* **Scalability**: Maintains the favorable memory characteristics of the br-index, allowing it to handle large genome collections efficiently. For example, it can store the index over 3000 complete E. coli genomes from NCBI's RefSeq collection within the RAM of a typical laptop.
+* **Lossless Approximate Pattern Matching**: Provides a robust implementation for approximate pattern matching, ensuring no loss of data accuracy during searches.
 
 ## Prerequisites
 
-b-move requires a number of packages to be installed on your system. 
-
-Required: 
+**b-move** requires several packages to be installed on your system:
 * CMake (recommended minimum version 3.10)
 * gcc (recommended minimum version 7.5)
 * Google's Sparsehash
 * [SDSL-lite](https://github.com/simongog/sdsl-lite)
 
-b-move internally integrates code from the following external repositories:
+**b-move** internally integrates code from the following external repositories:
 * [Columba](https://github.com/biointec/columba): the base of the search schemes implementation
 * [radixSA64](https://github.com/mariusmni/radixSA64): for building suffix arrays
 * [br-index](https://github.com/U-Ar/br-index): for building the permuted longest common prefix array
@@ -37,12 +44,11 @@ apt-get install libsparsehash-dev
 
 ## Installation
 
-Clone b-move from the GitHub address
+To install **b-move**, follow these steps:
 
-    git clone "https://github.com/biointec/b-move.git"
-
-From this `b-move` directory, run the following commands:
 ```bash
+git clone https://github.com/biointec/b-move.git
+cd b-move
 mkdir build
 cd build
 cmake ..
@@ -50,38 +56,34 @@ make
 ```
 
 ## Usage
-b-move can align patterns to a bidirectional move structure. To do this, you need to build the bidirectional move structure, based on the input data. Currently, we only support input data with an alphabet of length 5 (for DNA: A, C, G, T + sentinel character: $). b-move can build its indexes from a fasta file directly. The following commands are available:
-* bmove-build for building the bidirectional move structure
-* bmove-locate for lossless approximate pattern matching
-* bmove-benchmarkCharExt for benchmarking character extension during pattern matching
+**b-move** can align patterns to a bidirectional move structure. To do this, you need to build the bidirectional move structure, based on the input data. Currently, we only support input data with an alphabet of length 5 (for DNA: A, C, G, T + sentinel character: $). **b-move** can build its indexes from a fasta file directly. The following commands are available:
+* `bmove-build`: for building the bidirectional move structure
+* `bmove-locate`: for lossless approximate pattern matching
+* `bmove-benchmarkCharExt`: for benchmarking character extension during pattern matching
 
 
 ### bmove-build
 
-To build a b-move index, only the search text (the pan-genome) is required: run the following command in the `build` folder. The index can be built immediately from fasta files. The basefile parameter also determines where the index will be stored. 
+To build a **b-move** index, only the search text (the pan-genome) is required. Run the following command in the `build` folder. The index can be built directly from fasta files. The basefile parameter also determines where the index will be stored:
 
 ```bash
 ./bmove-build <base filename>
 ```
 
-
-Details:
+Options:
 
 ```
-Usage: ./bmove-build <base filename>
-
- [options]
   -v verbose output
 ```
  
 ### bmove-locate
-bmove-locate executable supports lossless approximate pattern matching using search schemes (see [Columba](https://github.com/biointec/columba)). b-move can align reads in a fasta (`.FASTA`, `.fasta`, `.fa`) or fastq (`.fq`, `.fastq`) format. Alignments are written to SAM format (`.sam`).To align your reads, use the following command: 
+The `bmove-locate` executable supports lossless approximate pattern matching using search schemes (see [Columba](https://github.com/biointec/columba)). **b-move** can align single end reads in fasta (`.FASTA`, `.fasta`, `.fa`) or fastq (`.fq`, `.fastq`) format. Alignments are written to SAM format (`.sam`). To align your reads, use the following command: 
 
 ```bash
 ./bmove-locate [options] basefilename readfile.[ext]
 ```
 
-Note that currently in most cases, the following search scheme option is most efficient: `-ss custom b-move/search_schemes/multiple_opt/individual_schemes/scheme1/` (see [here](https://doi.org/10.1007/978-1-0716-3989-4_11)).
+Currently, the following search scheme option is most efficient: `-ss custom b-move/search_schemes/multiple_opt/individual_schemes/scheme1/` (see [here](https://doi.org/10.1007/978-1-0716-3989-4_11)).
 
 Details:
 ```
@@ -138,7 +140,7 @@ Following input files are required:
 ```
  
 ### bmove-benchmarkCharExt
-bmove-benchmarkCharExt executable benchmarks bidirectional character extension during pattern matching. It outputs how many cycles one bidirectional character extension takes on average. To run an experiment, use the following command:
+The `bmove-benchmarkCharExt` executable benchmarks bidirectional character extension during pattern matching. It outputs how many cycles one bidirectional character extension takes on average. To run an experiment, use the following command:
 
 ```bash
 ./bmove-benchmarkCharExt [options] basefilename readfile.[ext]
@@ -181,7 +183,11 @@ Following input files are required:
   <base filename>.rev.move: move table of the reverse of T
 ```
 
- ## Contact
+## License
+
+**b-move** is released under the AGPL-3.0 license. See the [LICENSE](LICENSE) file for details.
+
+## Contact
 
 Questions and suggestions can be directed to: 
 * lore.depuydt@ugent.be

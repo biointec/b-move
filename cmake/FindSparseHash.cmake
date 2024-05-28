@@ -1,23 +1,28 @@
-# This file was borrowed from the pcsx2 - a Playstation 2 Emulator project.
-# No header was provided with this file, nor was there a licence file.
-# If anyone thinks that the use of this file violates certain copyrights,
-# please inform me of this matter.  - Jan Fostier, May 12 2011.
+# FindSparseHash.cmake
 
-# Try to find SparseHash
+# Locate SparseHash library headers
 # Once done, this will define
-#
 # SPARSEHASH_FOUND - system has SparseHash
 # SPARSEHASH_INCLUDE_DIR - the SparseHash include directories
 
-if(SPARSEHASH_INCLUDE_DIR)
-    set(SPARSEHASH_FIND_QUIETLY TRUE)
-endif(SPARSEHASH_INCLUDE_DIR)
+find_path(SPARSEHASH_INCLUDE_DIR
+    NAMES google/sparsehash/sparsehashtable.h
+    HINTS ENV CPATH ENV HOME ENV C_INCLUDE_PATH ENV CPLUS_INCLUDE_PATH /usr/include /usr/local/include
+    PATH_SUFFIXES include
+    NO_DEFAULT_PATH)
 
-find_path(SPARSEHASH_INCLUDE_DIR google/sparsehash/sparsehashtable.h)
+if (SPARSEHASH_INCLUDE_DIR)
+    set(SPARSEHASH_FOUND TRUE)
+else ()
+    set(SPARSEHASH_FOUND FALSE)
+endif ()
 
-# handle the QUIETLY and REQUIRED arguments and set SPARSEHASH_FOUND to TRUE if
-# all listed variables are TRUE
-include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(SparseHash DEFAULT_MSG SPARSEHASH_INCLUDE_DIR)
+if (SPARSEHASH_FOUND)
+    message(STATUS "Found SparseHash include directory: ${SPARSEHASH_INCLUDE_DIR}")
+else ()
+    message(STATUS "Could not find SparseHash library. Ensure that the paths are set correctly.")
+    message(STATUS "Searched in:")
+    message(STATUS "  INCLUDE_DIR: ${SPARSEHASH_INCLUDE_DIR}")
+endif ()
 
 mark_as_advanced(SPARSEHASH_INCLUDE_DIR)

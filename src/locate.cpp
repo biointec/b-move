@@ -108,25 +108,6 @@ void doBench(const vector<ReadRecord>& reads, RIndex& index,
     cout << "Median number of occurrences per read "
          << findMedian(numberMatchesPerRead, numberMatchesPerRead.size())
          << endl;
-    cout << "Reported matches via in-text verification: "
-         << counters.cigarsInTextVerification << endl;
-    cout << "Unique matches via (partial) in-text verification "
-         << counters.usefulCigarsInText << endl;
-    cout << "Unique matches via pure in-index matching "
-         << counters.cigarsInIndex << endl;
-    cout << "In text verification procedures " << counters.inTextStarted
-         << endl;
-    cout << "Failed in-text verifications procedures: "
-         << counters.abortedInTextVerificationCounter << endl;
-
-    cout << "Aborted in-text relative to started "
-         << (counters.abortedInTextVerificationCounter * 1.0) /
-                counters.inTextStarted
-         << endl;
-    cout << "Immediate switch after first part: " << counters.immediateSwitch
-         << endl;
-    cout << "Searches started (does not include immediate switches) : "
-         << counters.approximateSearchStarted << endl;
 
     cout << "Average size of reads: " << sizes / (reads.size() / 2.0) << endl;
 

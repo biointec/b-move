@@ -70,7 +70,6 @@ class RIndex {
         // stacks for search schemes
         thread_local static std::vector<std::vector<BRPosExt>> stacks;  // stacks of nodes for the different partitions
         thread_local static std::vector<BitParallelED> matrices;        // alignment matrices for the different partitions
-        thread_local static BitParallelED inTextMatrix;                 // alignment matrix for the whole read
 
         // sparse hash info
         const size_t wordSize = 10; // the size of the mers to be stored in a table
@@ -550,8 +549,7 @@ class RIndex {
         // ----------------------------------------------------------------------------
 
         /**
-         * Calculates the exact matches to the string in the index and returns them
-         * with their CIGAR string
+         * Calculates the exact matches to the string in the index
          * @param s the string to match in the reference genome
          * @param counters the performance counters
          * @returns a sorted vector containing the start positions of all exact
@@ -586,32 +584,10 @@ class RIndex {
         }
 #else
 
-            // THE CIGAR for the matches
-            std::vector<std::pair<char, uint>> CIGAR = {
-                std::make_pair('M', s.size())};
-
             const auto& p = textPositionsFromSample(sample);
-            // if (broken && sample.isValid()) {
-            //     // for each of the positions check if the substring in the text
-            //     // equals the string
-
-            //     for (const auto& pos : p) {
-            //         if (pos + s.size() <= textLength &&
-            //             text.compare(pos, s.size(), s) == 0) {
-            //             tOcc.emplace_back(Range(pos, pos + s.size()), 0, CIGAR);
-            //         }
-            //     }
-            //     counters.inTextStarted += p.size();
-            //     counters.usefulCigarsInText += tOcc.size();
-            //     counters.abortedInTextVerificationCounter += p.size() - tOcc.size();
-            //     counters.cigarsInTextVerification += tOcc.size();
-            // } else {
-                // No verification needed, just add the cigar
-                for (const auto& pos : p) {
-                    tOcc.emplace_back(Range(pos, pos + s.size()), 0, CIGAR);
-                }
-                counters.cigarsInIndex += p.size();
-            // }
+            for (const auto& pos : p) {
+                tOcc.emplace_back(Range(pos, pos + s.size()), 0);
+            }
 
             counters.totalReportedPositions += tOcc.size();
             // sort the vector and return
@@ -683,14 +659,6 @@ class RIndex {
             }
         }
 
-        /**
-         * Set the sequence for the in-text verification matrix
-         * @param s the sequence to be set
-         */
-        void setInTextMatrixSequence(const Substring& s) {
-            inTextMatrix.setSequence(s);
-        }
-
         // ----------------------------------------------------------------------------
         // ROUTINES FOR APPROXIMATE MATCHING
         // ----------------------------------------------------------------------------
@@ -717,7 +685,7 @@ class RIndex {
 
 #endif
         /**
-         * Sets the search direction of the r-index
+         * Sets the search direction of the index
          * @param d the direction to search in, either FORWARD or BACKWARD
          */
         void setDirection(Direction d) {
@@ -765,7 +733,6 @@ class RIndex {
                                             const int& idx = 1) {
 
             if (startMatch.getRanges().width() > 0) {
-                counters.approximateSearchStarted++;
                 recApproxMatchEditOptimized(search, startMatch, occ, parts,
                                             counters, idx);
                 return;
@@ -825,9 +792,6 @@ class RIndex {
             // Get the in-index occurrences
             const auto& broccs = occ.getIndexOccurrences();
 
-            // The size of the match
-            length_t size = (broccs.empty()) ? 0 : broccs[1].getDepth();
-
             for (const auto& brOcc : broccs) {
                 // Get the range
                 Range saRange(
@@ -838,16 +802,12 @@ class RIndex {
                 std::vector<TextOcc> textoccs = convertToMatchesInText(brOcc);
 
                 for (TextOcc textocc: textoccs) {
-                    std::vector<std::pair<char, uint>> CIGAR = {std::make_pair('M', size)};
-                    textocc.setCigar(CIGAR);
                     occ.addTextOcc(textocc);
                 }
             }
 
             // remove doubles
             occ.eraseDoublesText();
-            // Generate string output
-            occ.generateOutput();
 
             return occ.getTextOccurrences();
         }

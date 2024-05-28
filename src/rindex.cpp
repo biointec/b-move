@@ -28,7 +28,26 @@ thread_local BRExtraCharPtr RIndex::extraChar;
 thread_local vector<vector<BRPosExt>> RIndex::stacks;
 thread_local vector<BitParallelED> RIndex::matrices;
 
-thread_local BitParallelED RIndex::inTextMatrix;
+
+#ifndef ENABLE_BENCHMARK_FUNCTIONALITY
+
+/**
+ * Read a binary file and stores content in sdsl int_vector
+ * @param filename File name
+ * @param intVector output int_vector (contents will be overwritten)
+ * @returns True if successful, false otherwise
+ */
+bool readIntVector(const std::string& filename, sdsl::int_vector<>& intVector) {
+    std::ifstream ifs(filename, std::ios::binary);
+    if (!ifs) {
+        return false;
+    }
+    intVector.load(ifs);
+    ifs.close();
+    return true;
+}
+
+#endif
 
 // ----------------------------------------------------------------------------
 // ROUTINES FOR INITIALIZATION
@@ -287,9 +306,8 @@ length_t RIndex::getToehold(const PositionRange& range, const length_t c) const 
     length_t endRunHead = move.getRunHead(range.getEndPos());
 
     Position previousOcc;
-    bool check = move.getPreviousOccurence(range, previousOcc, c);
-    assert(check);
-
+    move.getPreviousOccurence(range, previousOcc, c);
+    
     if (endRunHead == c) {
         return samplesFirst[previousOcc.runIndex];
     }
@@ -303,8 +321,7 @@ length_t RIndex::getToeholdRev(const PositionRange& range, const length_t c) con
     length_t endRunHead = moveR.getRunHead(range.getEndPos());
 
     Position previousOcc;
-    bool check = moveR.getPreviousOccurence(range, previousOcc, c);
-    assert(check);
+    moveR.getPreviousOccurence(range, previousOcc, c);
 
     if (endRunHead == c) {
         return revSamplesFirst[previousOcc.runIndex];
@@ -515,8 +532,6 @@ const vector<TextOcc> RIndex::approxMatchesNaive(const string& pattern,
     }
     return totalWidth;
 #else
-
-    setInTextMatrixSequence(pattern);
 
     return getUniqueTextOccurrences(occurrences, maxED, counters);
 #endif
@@ -1041,9 +1056,7 @@ vector<TextOcc> RIndex::getUniqueTextOccurrences(BROccurrences& occ,
             occ.addTextOcc(textocc);
         }
     }
-    // erase equal occurrences from the in-text occurrences, note
-    // that an in-text occurrence with calculated CIGAR string takes
-    // preference over an equal one without CIGAR string
+    // erase equal occurrences from the in-text occurrences
     occ.eraseDoublesText();
 
     // find the non-redundant occurrences

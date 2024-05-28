@@ -172,84 +172,12 @@ class BitParallelED {
     }
 
     /**
-     * Letters in CIGAR string M (match/mismatch), I (insertion), D (deletion)
-     * or NOTHING (not initialized)
-     */
-    enum CIGARstate { M, I, D, NOTHING };
-
-    /**
      * Check if a certain row contains the final column
      * @param i The row index
      * @return True if the final column is contained in the row
      */
     bool inFinalColumn(const length_t i) const {
         return i >= getNumberOfRows() - getSizeOfFinalColumn();
-    }
-
-    /**
-     * Find the CIGAR string of the alignment of a reference substring to
-     * the query sequence the matrix was initialized with. The sequence
-     * should be set before calling this function
-     * @param ref the reference string that was aligned
-     * @param score the alignment score between ref and query
-     * @param CIGAR (output) the CIGAR string of the alignment
-     */
-    void findCIGAR(const Substring& ref, const uint score,
-                   std::vector<std::pair<char, uint>>& CIGAR) {
-
-        CIGAR.clear();
-        CIGAR.reserve(2 * score + 1);
-        // initialize the matrix with the alignment score
-        initializeMatrix(score);
-
-        // compute the rows
-        for (unsigned int i = 0; i < ref.size(); i++) {
-            computeRow(i + 1, ref[i]);
-        }
-
-        // trackback starting from the final cell
-        uint i = ref.size();
-        uint j = n - 1;
-        assert(operator()(i, j) == score);
-
-        CIGARstate state = NOTHING;
-
-        while (j > 0 || i > 0) {
-
-            const uint b = i / BLOCK_SIZE; // block identifier
-            uint64_t bit = 1ull << ((j - b * BLOCK_SIZE) + DIAG_R0);
-
-            if ((j > 0) && bv[i].HP & bit) { // gap in horizontal
-                j--;
-                if (state != CIGARstate::I) {
-                    CIGAR.emplace_back('I', 0);
-                    state = CIGARstate::I;
-                }
-
-            } else {
-                const uint64_t& M = mv[b][char2idx[ref[i - 1]]];
-                if ((i > 0 && j > 0) && ((M | ~bv[i].D0) & bit)) { // diagonal
-                    i--;
-                    j--;
-                    if (state != CIGARstate::M) {
-                        CIGAR.emplace_back('M', 0);
-                        state = CIGARstate::M;
-                    }
-
-                } else { // gap in vertical
-                    i--;
-                    if (state != CIGARstate::D) {
-                        CIGAR.emplace_back('D', 0);
-                        state = CIGARstate::D;
-                    }
-                }
-            }
-
-            CIGAR.back().second++;
-        }
-
-        // reverse the cigar as it was created from end to beginning
-        std::reverse(CIGAR.begin(), CIGAR.end());
     }
 
     /**
@@ -285,65 +213,6 @@ class BitParallelED {
                 refEnds.emplace_back(i);
             }
         }
-    }
-
-    /**
-     * Do backtracking and compute CIGAR string
-     * @param ref reference sequence, pattern P should be set using
-     * setSequence(P)(...)$
-     * @param refEnd End offset of the reference sequence
-     * @param refBegin Begin offset of the reference sequence (output)
-     * @param ED Edit distance score associated with this alignment (output)
-     * @param CIGAR CIGAR string (output)
-     */
-    void trackBack(const Substring& ref, const length_t refEnd,
-                   length_t& refBegin, length_t& ED,
-                   std::vector<std::pair<char, uint>>& CIGAR) const {
-
-        CIGAR.clear();
-        CIGAR.reserve(2 * MAX_ED + 1);
-
-        uint64_t i = refEnd;
-        uint64_t j = n - 1;
-        ED = operator()(i, j);
-
-        CIGARstate state = NOTHING;
-
-        while (j > 0) {
-
-            const uint b = i / BLOCK_SIZE; // block identifier
-            /*  const uint64_t& M = mv[b][char2idx[ref[i - 1]]]; */
-            uint64_t bit = 1ull << ((j - b * BLOCK_SIZE) + DIAG_R0);
-
-            if ((bv[i].HP & bit)) { // gap in horizontal direction -> insertion
-                j--;
-                if (state != CIGARstate::I) {
-                    CIGAR.emplace_back('I', 0);
-                    state = CIGARstate::I;
-                }
-
-            } else if ((i > 0) && ((mv[b][char2idx[ref[i - 1]]] | ~bv[i].D0) &
-                                   bit)) { // diagonal
-                i--;
-                j--;
-                if (state != CIGARstate::M) {
-                    CIGAR.emplace_back('M', 0);
-                    state = CIGARstate::M;
-                }
-
-            } else { // gap in vertical direction
-                i--;
-                if (state != CIGARstate::D) {
-                    CIGAR.emplace_back('D', 0);
-                    state = CIGARstate::D;
-                }
-            }
-
-            CIGAR.back().second++;
-        }
-
-        std::reverse(CIGAR.begin(), CIGAR.end());
-        refBegin = i;
     }
 
     /**

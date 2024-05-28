@@ -25,8 +25,6 @@
 #include <sstream>
 #include <cstdint>
 
-//TOdo: remove things here
-
 // ============================================================================
 // (TYPE) DEFINITIONS AND PROTOTYPES
 // ============================================================================
@@ -110,25 +108,6 @@ class Range {
 };
 
 // ============================================================================
-// CLASS CIGAR
-// ============================================================================
-
-class CIGARString : public std::vector<std::pair<char, uint>> {
-  public:
-    friend std::ostream& operator<<(std::ostream& o, const CIGARString& c) {
-        for (const auto& p : c) {
-            o << p.second << p.first;
-        }
-        return o;
-    }
-    CIGARString(std::vector<std::pair<char, uint>>& super)
-        : std::vector<std::pair<char, uint>>(super) {
-    }
-    CIGARString() : std::vector<std::pair<char, uint>>() {
-    }
-};
-
-// ============================================================================
 // CLASS TextOccurrence
 // ============================================================================
 
@@ -136,7 +115,6 @@ class TextOcc {
   private:
     Range range;       // the range in the text
     length_t distance; // the distance to this range (edit or hamming)
-    CIGARString CIGAR; // The CIGAR string of the match
 
     std::string samLine; // the corresponding output for this occurrence (for
     // now a custom format)
@@ -172,41 +150,13 @@ class TextOcc {
      * this occurrence
      */
     TextOcc(Range range, length_t distance)
-        : range(range), distance(distance), CIGAR(), samLine() {
-    }
-
-    /**
-     * Constructor
-     * @param range, the range of this occurrence in the text
-     * @param distance, the (edit or hamming) distance to the mapped read of
-     * this occurrence
-     * @param CIGAR the CIGAR string of the match
-     */
-    TextOcc(Range range, length_t distance,
-            std::vector<std::pair<char, uint>>& CIGAR)
-        : range(range), distance(distance), CIGAR(CIGAR), samLine() {
+        : range(range), distance(distance), samLine() {
     }
 
     /**
      * Constructor for an invalid text occurrence
      */
     TextOcc() : range(0, 0) {
-    }
-
-    /**
-     * Generates the output of this occurrence, for now in format:
-     * startposition\twidth\tdistance\tCIGAR, where startposition is the
-     * beginning of thetext occurrence, width is the length of this occurrence,
-     * distance is the (edit or hamming) distance to the mapped read and CIGAR
-     * is the CIGAR string of the match
-     */
-    void generateOutput() {
-        samLine = std::to_string(range.getBegin()) + "\t" +
-                  std::to_string(range.width()) + "\t" +
-                  std::to_string(distance) + "\t";
-        for (const auto& p : CIGAR) {
-            samLine += std::to_string(p.second) + p.first;
-        }
     }
 
     void generateSamSE(bool revCompl, bool notPrimary, const std::string& seqID,
@@ -219,14 +169,14 @@ class TextOcc {
         s << "*\t";                        // reference sequence name
         s << range.getBegin() + 1 << "\t"; // 1-based pos in ref seq
         s << getMapQ(distance, nHits, minscore) << "\t"; // mapping quality
-        s << CIGAR << "\t";                              // CIGAR string
+        s << "*\t";       // CIGAR string not yet supported
         s << "*\t";       // mate ref seq name, always set to *
         s << "0\t";       // mate pos, always set to 0
         s << "0\t";       // inferred insert size, always set to 0
         s << seq << "\t"; // read sequence
         s << (qual.empty() ? "*" : qual) << "\t"; // read quality
         s << "AS:i:" << distance << "\t";         // alignment score
-        s << "PG:Z:Columba";                      // program name
+        s << "PG:Z:b-move";                      // program name
         samLine = s.str();
     }
 
@@ -244,7 +194,7 @@ class TextOcc {
     /**
      * Operator overloading for sorting the occurrences.
      * Occurrences are first sorted on their begin position, then on their
-     * distance , their length and finally on the existence of the CIGAR string
+     * distance and finally their length
      */
     bool operator<(const TextOcc& r) {
 
@@ -254,11 +204,9 @@ class TextOcc {
             // begin is equal, better ed is smarter
             if (distance != r.getDistance()) {
                 return distance < r.getDistance();
-            } else if (range.width() != r.getRange().width()) {
+            } else {
                 // shorter read is smaller...
                 return range.width() < r.getRange().width();
-            } else {
-                return hasCigar() && !r.hasCigar();
             }
         }
     }
@@ -273,14 +221,6 @@ class TextOcc {
 
     length_t width() const {
         return range.width();
-    }
-
-    bool hasCigar() const {
-        return !CIGAR.empty();
-    }
-
-    void setCigar(std::vector<std::pair<char, uint>>& cigar) {
-        CIGAR = cigar;
     }
 };
 
@@ -521,44 +461,14 @@ struct Counters {
     uint64_t nodeCounter; // counts the number of nodes visited in the index
 
     uint64_t totalReportedPositions; // counts the number of matches
-                                     // reported (either via in-text
-                                     // verification or in-index matching)
-
-    uint64_t cigarsInIndex; // counts the number of cigar strings calculated
-                            // for matches in the index, note that this is
-                            // only calculated if the match is non-redundant
-
-    uint64_t inTextStarted; // counts the number of times in-text verification
-                            // was started, this equals the number of look-ups
-                            // in the suffix array for in-text verification
-    uint64_t abortedInTextVerificationCounter; // counts the number of
-                                               // unsuccesful in-text
-                                               // verifications
-
-    uint64_t cigarsInTextVerification; // counts the number of cigars strings
-                                       // calculated for matches in the text,
-                                       // note that this is done for each match
-                                       // in the text as at the point of
-                                       // calculation it is not known if this
-                                       // match will turn out to be redundant
-    uint64_t
-        usefulCigarsInText; // counts the number of cigar strings calculated
-                            // for non-redundant matches in the text
-
-    uint64_t immediateSwitch; // Counts the number of times the partial
-                              // matches after the first part has been
-                              // matched are immediately in-text verified
-    uint64_t approximateSearchStarted; // Counts the number of times a
-                                       // search does start
+                                     // reported
 
     /**
      * Reset all counters to 0
      */
     void resetCounters() {
-        nodeCounter = 0, abortedInTextVerificationCounter = 0,
-        totalReportedPositions = 0, cigarsInIndex = 0,
-        cigarsInTextVerification = 0, inTextStarted = 0, usefulCigarsInText = 0,
-        immediateSwitch = 0, approximateSearchStarted = 0;
+        nodeCounter = 0,
+        totalReportedPositions = 0;
     }
 
     Counters() {
@@ -567,15 +477,7 @@ struct Counters {
 
     void addCounters(const Counters& o) {
         nodeCounter += o.nodeCounter,
-            abortedInTextVerificationCounter +=
-            o.abortedInTextVerificationCounter,
-            totalReportedPositions += o.totalReportedPositions,
-            cigarsInIndex += o.cigarsInIndex,
-            cigarsInTextVerification += o.cigarsInTextVerification,
-            inTextStarted += o.inTextStarted,
-            usefulCigarsInText += o.usefulCigarsInText,
-            immediateSwitch += o.immediateSwitch,
-            approximateSearchStarted += o.approximateSearchStarted;
+            totalReportedPositions += o.totalReportedPositions;
     }
     void incNodeCounter() {
         nodeCounter++;
@@ -631,14 +533,6 @@ class Occurrences {
     /**
      * Add an in-text occurrence
      */
-    void addTextOcc(const Range& range, const length_t& score,
-                    std::vector<std::pair<char, uint>>& CIGAR) {
-        inTextOcc.emplace_back(range, score, CIGAR);
-    }
-
-    /**
-     * Add an in-text occurrence
-     */
     void addTextOcc(const Range& range, const length_t score) {
         inTextOcc.emplace_back(range, score);
     }
@@ -668,88 +562,12 @@ class Occurrences {
         return inTextOcc.size();
     }
 
-    void generateOutput() {
-        for (auto& t : inTextOcc) {
-            t.generateOutput();
-        }
-    }
-
     const std::vector<TextOcc>& getTextOccurrences() const {
         return inTextOcc;
     }
 
     length_t getMaxSize() const {
         return std::max(inTextOcc.size(), inIndexOcc.size());
-    }
-};
-
-// ============================================================================
-// CLASS INTEXTVERIFICATIONTASK
-// ============================================================================
-
-class IntextVerificationTask {
-
-  private:
-    const std::vector<Substring>&
-        refs;              // the reference subsequence to be checked
-    BitParallelED& matrix; // the matrix to use
-    const length_t maxED;  // maximum allowed edit distance
-    const length_t minED;  // minimum allowed edit distance
-
-  public:
-    IntextVerificationTask(const std::vector<Substring>& refs,
-                           BitParallelED& matrix, const length_t maxED,
-                           const length_t minED)
-        : refs(refs), matrix(matrix), maxED(maxED), minED(minED) {
-    }
-
-    /**
-     * Verify the ref subsequence to the matrix
-     * @param counters performance counters
-     * @param occ the occurrences, new in-text occurrences may be added
-     */
-    template<class IndexOcc, class IndexPosExt>
-    void doTask(Counters& counters, Occurrences<IndexOcc, IndexPosExt>& occ) {
-
-        counters.inTextStarted += refs.size();
-        for (const auto& ref : refs) {
-
-            length_t i;
-            length_t size = ref.size();
-
-            for (i = 0; i < size; i++) {
-                if (!matrix.computeRow(i + 1, ref[i])) {
-                    break;
-                }
-            }
-
-            // did we break before a possible match?
-            if (i <= size - matrix.getSizeOfFinalColumn()) {
-                counters.abortedInTextVerificationCounter++;
-                continue;
-            }
-
-            std::vector<length_t> refEnds;
-            matrix.findClusterCenters(i, refEnds, maxED, minED);
-
-            if (refEnds.empty()) {
-                counters.abortedInTextVerificationCounter++;
-                continue;
-            }
-
-            // for each valid end -> calculate CIGAR string and report
-            for (const auto& refEnd : refEnds) {
-                length_t bestScore = maxED + 1, bestBegin = 0;
-
-                std::vector<std::pair<char, uint>> CIGAR;
-                matrix.trackBack(ref, refEnd, bestBegin, bestScore, CIGAR);
-                counters.cigarsInTextVerification++;
-
-                // make an occurrence
-                occ.addTextOcc(Range(ref.begin() + bestBegin, ref.begin() + refEnd),
-                            bestScore, CIGAR);
-            }
-        }
     }
 };
 

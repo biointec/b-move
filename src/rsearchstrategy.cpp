@@ -512,9 +512,6 @@ vector<TextOcc> RSearchStrategy::matchApprox(const string& pattern,
     // The occurrences in the text and index
     BROccurrences occ;
 
-    // set sequence to this matrix
-    index.setInTextMatrixSequence(pattern);
-
     // END of preprocessing
     // A) do the searches for which the first part occurs more than the switch point
 

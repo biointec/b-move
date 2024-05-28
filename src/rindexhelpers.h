@@ -37,23 +37,6 @@
 using namespace std;
 
 
-/**
- * Read a binary file and stores content in sdsl int_vector
- * @param filename File name
- * @param intVector output int_vector (contents will be overwritten)
- * @returns True if successful, false otherwise
- */
-static bool readIntVector(const std::string& filename, sdsl::int_vector<>& intVector) {
-    std::ifstream ifs(filename, std::ios::binary);
-    if (!ifs) {
-        return false;
-    }
-    intVector.load(ifs);
-    ifs.close();
-    return true;
-}
-
-
 // ===========================================================================
 // CLASS Position
 // ===========================================================================
@@ -215,7 +198,7 @@ class SAPositionRangePair{
 // ============================================================================
 
 /**
- * Bidirectional r-index sample
+ * Bidirectional b-move sample
  * Holds a SAPositionRangePair with a range over de SA and reverse SA,
  * and the j, d and len variables, as explained in the br-index paper
 */
@@ -300,12 +283,12 @@ class BRSample {
 // ============================================================================
 
 /**
- * A position in the bidirectional r-index.
+ * A position in b-move.
  */
 
 class BRPos {
     protected:
-        BRSample sample; // the br-index sample
+        BRSample sample; // the b-move sample
         length_t depth; // the depth of the prefix of the suffixes of this position
 
     public:
@@ -356,7 +339,7 @@ class BRPos {
 // ============================================================================
 
 /**
- * An occurrence in the bidirectional R-index
+ * An occurrence in b-move
  */
 
 class BROcc {
@@ -478,7 +461,7 @@ class BROcc {
 // ============================================================================
 
 /**
- * A single node in the bidirectional r-index. Its depth is the depth from
+ * A single node in b-move. Its depth is the depth from
  * the startmatch for a particular phase of a search
  */
 
