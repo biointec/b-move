@@ -9,9 +9,9 @@ The [move structure](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.
 ### Key Features
 
 * **Efficient Bidirectional Search**: Supports fast, cache-efficient bidirectional character extensions in run-length compressed space.
-* **High Performance**: Achieves bidirectional character extensions up to 8 times faster than alternative bidirectional indices like the [br-index](https://github.com/U-Ar/br-index) (bidirectional r-index), significantly narrowing the performance gap with FM-index-based tools such as [Columba](https://github.com/biointec/columba).
-* **Scalability**: Maintains the favorable memory characteristics of the br-index, allowing it to handle large genome collections efficiently. For example, it can store the index over 3000 complete E. coli genomes from NCBI's RefSeq collection within the RAM of a typical laptop.
-* **Lossless Approximate Pattern Matching**: Provides a robust implementation for approximate pattern matching, ensuring no loss of data accuracy during searches.
+* **High Performance**: Achieves bidirectional character extensions up to 8 times faster than the [br-index](https://github.com/U-Ar/br-index) (bidirectional r-index), significantly narrowing the performance gap with FM-index-based tools such as [Columba](https://github.com/biointec/columba).
+* **Scalability**: Maintains the favorable memory characteristics of the br-index, allowing it to handle large genome collections efficiently. For example, it can store the index of over 3000 complete E. coli genomes from NCBI's RefSeq collection within the RAM of a typical laptop.
+* **Lossless Approximate Pattern Matching**: Provides a robust implementation for approximate pattern matching, ensuring no loss of alignments during searches.
 
 ## Prerequisites
 
