@@ -185,6 +185,11 @@ Following input files are required:
   <base filename>.rev.move: move table of the reverse of T
 ```
 
+## Citation
+A preprint of the **b-move** paper is available on [bioRxiv](https://doi.org/10.1101/2024.05.30.596587).
+
+If you use **b-move** in your research, please also cite Nishimoto and Tabei's [paper](https://doi.org/10.4230/LIPIcs.ICALP.2021.101), which introduced the move structure.
+
 ## License
 
 **b-move** is released under the AGPL-3.0 license. See the [LICENSE](LICENSE) file for details.
