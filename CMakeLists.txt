@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.14)
 
 project(bmove)
 
@@ -14,18 +14,38 @@ else()
     link_directories(${SDSL_LIBRARY_DIRS})
 endif()
 
-# Check for SparseHash library
-find_package(SparseHash REQUIRED)
-if (NOT SPARSEHASH_FOUND)
-    message(FATAL_ERROR "SparseHash library not found. Please install it and try again.")
-else()
-    include_directories(${SPARSEHASH_INCLUDE_DIR})
-endif()
-
 # Auxiliary classes
 add_library(AuxiliaryClasses src/bitparallelmatrix.cpp src/nucleotide.cpp src/search.cpp)
 
-add_executable(bmove-build src/build.cpp src/buildMove.cpp)
+add_executable(bmove-build src/build.cpp src/buildhelpers.cpp src/move.cpp)
+
+# Define the submodule directory
+set(SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external/Big-BWT)
+
+# Add a custom command to build the submodule executable
+add_custom_command(
+    OUTPUT ${SUBMODULE_DIR}/bwtcheck
+    COMMAND ${CMAKE_COMMAND} -E chdir ${SUBMODULE_DIR} make
+    WORKING_DIRECTORY ${SUBMODULE_DIR}
+    COMMENT "Building Big-BWT executable"
+)
+
+# Add a custom target that depends on the custom command
+add_custom_target(bigbwt_target ALL DEPENDS ${SUBMODULE_DIR}/bwtcheck)
+
+# Ensure bmove-build depends on bigbwt_target
+add_dependencies(bmove-build bigbwt_target)
+
+# Define the source and destination paths
+set(SCRIPT_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src)
+set(SCRIPT_DEST_DIR ${CMAKE_BINARY_DIR})
+
+# Copy the script to the build directory
+add_custom_command(
+    TARGET bmove-build POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy ${SCRIPT_SOURCE_DIR}/bmove-build-pfp.sh ${SCRIPT_DEST_DIR}/bmove-build-pfp.sh
+    COMMENT "Copying bmove-build-pfp.sh to the build directory"
+)
 
 add_executable(bmove-locate src/locate.cpp src/move.cpp src/rindex.cpp src/rsearchstrategy.cpp)
 target_link_libraries(bmove-locate AuxiliaryClasses)
@@ -53,6 +73,20 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     # Set the possible values of build type for cmake-gui
     set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
 endif()
+
+# add libsais to bmove-build
+# add dependencies
+include(cmake/CPM.cmake)
+CPMAddPackage(
+  NAME libsais
+  GITHUB_REPOSITORY IlyaGrebnov/libsais
+  GIT_TAG v2.8.3
+  OPTIONS
+    "LIBSAIS_USE_OPENMP OFF"
+    "LIBSAIS_BUILD_SHARED_LIB OFF"
+)
+
+target_link_libraries(bmove-build libsais)
 
 target_link_libraries(bmove-build ${SDSL_LIBRARIES})
 target_link_libraries(bmove-locate ${SDSL_LIBRARIES})

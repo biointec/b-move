@@ -31,4 +31,6 @@
     typedef uint64_t length_t;
 #endif
 
+#define BMOVE_BUILD_INDEX_TAG 2    // the tag for building the index
+
 #endif

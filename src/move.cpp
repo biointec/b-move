@@ -18,6 +18,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
  ******************************************************************************/
 #include "move.h"
+#include "moveElement.h"
 #include "rindexhelpers.h"
 #include "wordlength.h"
 
@@ -110,29 +111,32 @@ bool Move<S>::getNextOccurence(const PositionRange& startPosition,
 }
 
 template <size_t S>
-void Move<S>::lf(const Position& input, Position& output, const bool onlyPosIndex) const {
-    // Get the output position index by using mappings and adding the offset from the input position to the start of its run.
+void Move<S>::lf(const Position& input, Position& output,
+                 const bool onlyPosIndex) const {
+    // Get the output position index by using mappings and adding the offset
+    // from the input position to the start of its run.
     MoveElement lfElement = this->mappings[input.runIndex];
-    output.posIndex = lfElement.outputStart + (input.posIndex - lfElement.inputStart);
+    output.posIndex =
+        lfElement.outputStart + (input.posIndex - lfElement.inputStart);
 
-    if (onlyPosIndex) return;
+    if (onlyPosIndex)
+        return;
 
-    // Find the corresponding input run by linear search, starting from the first input interval overlapping the output interval.
+    // Find the corresponding input run by linear search, starting from the
+    // first input interval overlapping the output interval.
     length_t b = lfElement.mappingIndex;
-    short l = 0;
-    while (b < runsSize && this->mappings[b].inputStart <= output.posIndex) {
+    while (this->mappings[b].inputStart <= output.posIndex) {
         b++;
-        l ++;
     }
-    
-    output.runIndex = b-1;
+
+    output.runIndex = b - 1;
 
     assert(output.posIndex >= mappings[output.runIndex].inputStart);
-    assert(output.runIndex == runsSize -1 || output.posIndex < mappings[output.runIndex+1].inputStart);
+    assert(output.runIndex == runsSize - 1 ||
+           output.posIndex < mappings[output.runIndex + 1].inputStart);
 
     return;
 }
-
 
 template <size_t S>
 length_t Move<S>::getCharCountInRange(const PositionRange& range, const length_t c) const {
@@ -246,35 +250,27 @@ void Move<S>::printData() {
     cout << endl;
 }
 
-template <size_t S>
-void Move<S>::load(const string& baseFile, bool verbose) {
-    length_t size;
-
-    string fileName = baseFile;
-    fileName += ".move";
+template <size_t S> bool Move<S>::load(const string& baseFile, bool verbose) {
+    string fileName = baseFile + ".move";
 
     ifstream ifs(fileName, ios::binary);
     if (!ifs) {
-        throw runtime_error("Cannot open file: " + fileName);
+        return false;
     }
 
     // Load the bwtSize, amount of input intervals and the alphabet size.
     ifs.read((char*)&bwtSize, sizeof(bwtSize));
-    ifs.read((char*)&size, sizeof(size));
+    ifs.read((char*)&runsSize, sizeof(runsSize));
     ifs.read((char*)&zeroCharPos, sizeof(zeroCharPos));
-    ifs.read((char*)&zeroCharRun, sizeof(zeroCharRun));
 
-    // Load mappings: allocate memory and read.
-    mappings = vector<MoveElement>(size);
-    for (length_t i = 0; i < size; i ++) {
+    // Load rows: allocate memory and read.
+    mappings.reserve(runsSize + 1);
+    for (length_t i = 0; i < runsSize + 1; i++) {
         mappings[i].load(ifs);
     }
 
-    runsSize = mappings.size();
-
     ifs.close();
-
-    runsSize = mappings.size();
+    return true;
 }
 
 template class Move<ALPHABET>;

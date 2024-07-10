@@ -1,3 +1,12 @@
+/*
+ * This is a modified version of the permuted_lcp class
+ * originally implemented by Yuma Arakawa.
+ * Source: https://github.com/U-Ar/br-index
+ */
+
+//============================================================================
+
+
 #ifndef PLCP_H
 #define PLCP_H
 
@@ -7,7 +16,6 @@
 #include <fstream>  // used for reading in files
 #include <iostream> // used for printing
 #include <cstdint>
-
 
 /**
  * class for the PLCP (permuted longest common prefix) array
@@ -82,8 +90,9 @@ class PLCP {
             // create run length encoding of PLCP by using sparse bitvectors
             // -> generate bitvectors 'ones' & 'zeros' from S
             size_t u = pos + 1;
-            std::vector<bool> ones_bv(u,false);
-            std::vector<bool> zeros_bv(u,false);
+            n = n + 2;
+            std::vector<bool> ones_bv(n, false);
+            std::vector<bool> zeros_bv(n, false);
             bool bit_1 = true; // tell if we are counting 1 bits
             length_t cont_1 = 0, cont_0 = 0; // continuous number of 1 bits & 0 bits
 
@@ -116,12 +125,26 @@ class PLCP {
             zeros = SparseBitvec(zeros_bv);
         }
 
-        /**
-         * Get the size of the PLCP
-         * @return The size of the PLCP
-        */
-        size_t size() const {
-            return n;
+        /*
+         * constructor receiving positional vectors of One-Zero encoding
+         * directly
+         */
+        PLCP(length_t _n, std::vector<length_t> const& O,
+             std::vector<length_t> const& Z) {
+            this->n = _n + 2;
+
+            std::vector<bool> ones_bv(n, false);
+            std::vector<bool> zeros_bv(n, false);
+            for (length_t i = 0; i < O.size(); i++) {
+                assert(O[i] <= n);
+                ones_bv[O[i]] = true;
+            }
+            for (length_t i = 0; i < Z.size(); i++) {
+                assert(O[i] <= n);
+                zeros_bv[Z[i]] = true;
+            }
+            ones = SparseBitvec(ones_bv);
+            zeros = SparseBitvec(zeros_bv);
         }
 
         /**

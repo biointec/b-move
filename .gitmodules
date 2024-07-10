@@ -1,0 +1,3 @@
+[submodule "external/Big-BWT"]
+	path = external/Big-BWT
+	url = https://gitlab.com/manzai/Big-BWT.git

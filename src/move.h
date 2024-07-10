@@ -114,6 +114,47 @@ class Move {
         PositionRange fullRange() const;
 
         /**
+         * Get the run head of the run with given index.
+         * @param pos The position for which to get the run head within the
+         * block.
+         * @return The run head of the given run index.
+         */
+        uint8_t getRunHead(const length_t& runIndex) const {
+            return mappings[runIndex].c;
+        }
+
+        /**
+         * @brief Get the Input Start Pos object
+         *
+         * @param runIndex
+         * @return length_t
+         */
+        length_t getInputStartPos(const length_t& runIndex) const {
+            return mappings[runIndex].inputStart;
+        }
+
+        void fastForward(const length_t& positionIndex,
+                         length_t& runIndex) const {
+            // Fast forward the runIndex until it contains
+            // the run that contains the positionIndex.
+            while (mappings[runIndex].inputStart <= positionIndex) {
+                runIndex++;
+                // Ensure runIndex stays within bounds
+                assert(runIndex < runsSize + 1);
+            }
+            runIndex--;
+        }
+
+        void findLF(length_t& positionIndex, length_t& runIndex) const {
+            const auto& row = mappings[runIndex];
+            length_t offset = positionIndex - row.inputStart;
+            positionIndex = row.outputStart + offset;
+            runIndex = row.mappingIndex;
+            // Fast forward to the correct runIndex after LF operation
+            fastForward(positionIndex, runIndex);
+        }
+
+        /**
          * Get the run index of a position.
          * @param position The position of which to find the runIndex.
          * @param possibleRange The range of run indices in which the run index is located (end inclusive).
@@ -142,7 +183,7 @@ class Move {
          * Load the move data struction from an input stream.
          * @param in The input stream to load from.
         */
-        void load(const string& baseFN, const bool verbose);
+        bool load(const string& baseFN, const bool verbose);
 
 
         /**

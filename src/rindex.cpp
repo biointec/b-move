@@ -56,18 +56,72 @@ bool readIntVector(const std::string& filename, sdsl::int_vector<>& intVector) {
 
 void RIndex::fromFiles(const string& baseFile, bool verbose) {
 
-    if (verbose) {
-        cout << "Reading " << baseFile << ".cct...";
-        cout.flush();
+    // read the compiled info
+    {
+        ifstream ifs(baseFile + ".comp");
+        if (!ifs) {
+            std::cout <<
+                "The index was built with an older version of bmove-build or "
+                "the compile info (" +
+                baseFile +
+                ".comp) is missing! "
+                "Proceed with caution or rebuild the index!." << std::endl;
+        } else {
+
+            size_t build_length_t_size;
+            ifs >> build_length_t_size;
+            if (build_length_t_size != sizeof(length_t)) {
+                size_t thisSize = sizeof(length_t) * 8;
+                build_length_t_size *= 8;
+
+                throw runtime_error(
+                    "The index was built with a compiled version that uses " +
+                    to_string(build_length_t_size) +
+                    "-bit numbers, while the current programme was compiled "
+                    "using " +
+                    to_string(thisSize) +
+                    "-bit numbers. Recompile the programme with the correct "
+                    "THIRTY_TWO flag set.");
+            }
+        }
+    }
+    // Check the build tag of the file
+    {
+        length_t tag = 0;
+        ifstream ifs(baseFile + ".tag");
+        if (!ifs) {
+            std::cout << 
+                "The index was built with an older version of bmove-build or "
+                "the tag is missing! "
+                "Proceed with caution or update re-build the index." << std::endl;
+        } else {
+            ifs >> tag;
+            ifs.close();
+            if (tag < BMOVE_BUILD_INDEX_TAG) {
+                std::cout << 
+                    "The index was built with an older version of "
+                    "bmove-build. "
+                    "Proceed with caution or update re-build the index." << std::endl;
+            } else if (tag > BMOVE_BUILD_INDEX_TAG) {
+                std::cout << 
+                    "The index was built with a newer version of "
+                    "bmove-build. "
+                    "Proceed with caution or update re-build the index." << std::endl;
+            }
+        }
     }
 
-    // read the counts table
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".cct" << "..." << std::endl;
+    }
+
+    // Read the counts table
     vector<length_t> charCounts(256, 0);
     if (!readArray(baseFile + ".cct", charCounts)) {
         throw runtime_error("Cannot open file: " + baseFile + ".cct");
     }
 
-    length_t cumCount = 0; // cumulative character counts
+    length_t cumCount = 0; // Cumulative character counts
     for (size_t i = 0; i < charCounts.size(); i++) {
         if (charCounts[i] == 0)
             continue;
@@ -78,114 +132,95 @@ void RIndex::fromFiles(const string& baseFile, bool verbose) {
     sigma = Alphabet<ALPHABET>(charCounts);
 
     if (verbose) {
-        cout << "done" << endl;
+
 #ifndef ENABLE_BENCHMARK_FUNCTIONALITY
 
-        // read plcp array
-        cout << "Reading " << baseFile << ".plcp...";
-        cout.flush();
+        std::cout << "Reading " << baseFile << ".plcp..." << std::endl;
     }
     if (!plcp.read(baseFile + ".plcp")) {
         throw runtime_error("Cannot open file: " + baseFile + ".plcp");
     }
+
     if (verbose) {
-        cout << "done" << endl;
 #endif
 
-        // read the move
-        cout << "Reading " << baseFile << ".move...";
-        cout.flush();
+        std::cout << "Reading " << baseFile << ".move..." << std::endl;
     }
-    
-    move.load(baseFile, verbose);
+    if (!move.load(baseFile, verbose)) {
+        throw runtime_error("Error loading move file: " + baseFile + ".move");
+    }
 
-    if(verbose) {
-        cout << "done" << endl;
+    if (verbose) {
 #ifndef ENABLE_BENCHMARK_FUNCTIONALITY
 
-        cout << "Reading " << baseFile << ".smpf...";
-        cout.flush();
+        std::cout << "Reading " << baseFile << ".smpf..." << std::endl;
     }
     if (!readIntVector(baseFile + ".smpf", samplesFirst)) {
         throw runtime_error("Cannot open file: " + baseFile + ".smpf");
     }
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".smpl...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".smpl..." << std::endl;
     }
     if (!readIntVector(baseFile + ".smpl", samplesLast)) {
         throw runtime_error("Cannot open file: " + baseFile + ".smpl");
     }
-    
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".prdf...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".prdf..." << std::endl;
     }
     if (!predFirst.read(baseFile + ".prdf")) {
         throw runtime_error("Cannot open file: " + baseFile + ".prdf");
     }
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".prdl...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".prdl..." << std::endl;
     }
     if (!predLast.read(baseFile + ".prdl")) {
-        throw runtime_error("Cannot open file: " + baseFile + ".prdf");
+        throw runtime_error("Cannot open file: " + baseFile + ".prdl");
     }
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".ftr...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".ftr..." << std::endl;
     }
     if (!readIntVector(baseFile + ".ftr", firstToRun)) {
         throw runtime_error("Cannot open file: " + baseFile + ".ftr");
     }
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".ftr...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".ltr..." << std::endl;
     }
     if (!readIntVector(baseFile + ".ltr", lastToRun)) {
         throw runtime_error("Cannot open file: " + baseFile + ".ltr");
     }
+
     if (verbose) {
-        cout << "done" << endl;
 #endif
 
-        cout << "Reading " << baseFile << ".rev.move...";
-        cout.flush();
+
+        std::cout << "Reading " << baseFile << ".rev.move..." << std::endl;
+    }
+    if (!moveR.load(baseFile + ".rev", verbose)) {
+        throw runtime_error("Error loading reverse move file: " + baseFile + ".rev.move");
     }
 
-    moveR.load(baseFile + ".rev", verbose);
-
-    if(verbose) {
-        cout << "done" << endl;
+    if (verbose) {
 #ifndef ENABLE_BENCHMARK_FUNCTIONALITY
 
-        cout << "Reading " << baseFile << ".rev.smpf...";
-        cout.flush();
+        std::cout << "Reading " << baseFile << ".rev.smpf..." << std::endl;
     }
     if (!readIntVector(baseFile + ".rev.smpf", revSamplesFirst)) {
         throw runtime_error("Cannot open file: " + baseFile + ".rev.smpf");
     }
-    if (verbose) {
-        cout << "done" << endl;
 
-        cout << "Reading " << baseFile << ".rev.smpl...";
-        cout.flush();
+    if (verbose) {
+        std::cout << "Reading " << baseFile << ".rev.smpl..." << std::endl;
     }
     if (!readIntVector(baseFile + ".rev.smpl", revSamplesLast)) {
         throw runtime_error("Cannot open file: " + baseFile + ".rev.smpl");
     }
+
     if (verbose) {
-        cout << "done" << endl;
 #endif
     }
 }
@@ -722,8 +757,6 @@ void RIndex::recApproxMatchEditOptimized(
         extendBRPos(startMatch.getSample(), stack, counters);
     }
 
-    bool idxZero = idx == 0;
-
     while (!stack.empty()) {
         const BRPosExt currentNode = stack.back();
         stack.pop_back();
@@ -734,39 +767,8 @@ void RIndex::recApproxMatchEditOptimized(
             continue;
         }
 
-        if (currentNode.getSample().getRanges().width() > 0 || idxZero) {
-            // continue the search for children of this node in-index
-            extendBRPos(currentNode, stack, counters);
-            continue;
-        }
-        // crossing-over
-        // convert node to an occurrence in the text with the
-
-        length_t startBeforeThis =
-            parts[s.getLowestPartProcessedBefore(idx)].begin();
-        length_t globalMaxED = s.getMaxED();
-        length_t startDiff = startBeforeThis + globalMaxED;
-
-        if (startBeforeThis == 0) {
-            startDiff = 0;
-        } else if (dir == BACKWARD) {
-            length_t row = currentNode.getRow();
-            length_t col = bpED.getFirstColumn(row);
-            startDiff -= col + bpED(row, col);
-
-        } else if (!descOther.empty()) {
-            // FORWARD DIRECTION
-            // descOther are thus in backwards direction
-            startDiff -= descOther.size() - initOther.size() + initOther.back();
-        }
-
-        const auto& startPos =
-            getBeginPositions(currentNode.getSample(), startDiff,
-                              startMatch.getShift());
-
-        for (auto pos: startPos) {
-            occ.addTextOcc(Range(pos, pos + startMatch.getDepth()), startMatch.getDistance());
-        }
+        // continue the search for children of this node in-index
+        extendBRPos(currentNode, stack, counters);
     }
 }
 
