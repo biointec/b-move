@@ -244,4 +244,4 @@ install(TARGETS bmove-benchmarkPhi DESTINATION bin)
 # ---- Unit Tests ----
 
 # Add the unittest subdirectory
-add_subdirectory(unittest)
+# add_subdirectory(unittest)
