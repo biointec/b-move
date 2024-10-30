@@ -279,14 +279,14 @@ void checkTextSize(const size_t tSize) {
             "compiler option is: " +
             std::to_string(std::numeric_limits<length_t>::max()));
     }
-    if ((sizeof(length_t) * 8 == 64) &&
-        (tSize <= std::numeric_limits<uint32_t>::max())) {
-        logger.logWarning(
-            "Program was compiled with 64-bit words, but the text size (" +
-            std::to_string(tSize) +
-            ") fits in a 32-bit word. Consider recompiling the program to "
-            "improve performance and save memory.");
-    }
+    // if ((sizeof(length_t) * 8 == 64) &&
+    //     (tSize <= std::numeric_limits<uint32_t>::max())) {
+    //     logger.logWarning(
+    //         "Program was compiled with 64-bit words, but the text size (" +
+    //         std::to_string(tSize) +
+    //         ") fits in a 32-bit word. Consider recompiling the program to "
+    //         "improve performance and save memory.");
+    // }
 }
 
 void countChars(const string& T, vector<length_t>& charCounts) {
