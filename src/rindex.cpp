@@ -18,71 +18,63 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
  ******************************************************************************/
 #include "rindex.h"
-#include <cassert>
+#include "definitions.h"
+#include "rindexhelpers.h"
+#include "logger.h"
+
+#include "search.h" // for Search
+
+#include <assert.h>                 // for assert
+#include <cstdint>                  // for uint16_t
+#include <fmt/format.h>             // for fmt::to_string
+#include <fstream>                  // for operator<<, ifstream, basic_ostream
+#include <iterator>                 // for distance
+#include <limits>                   // for numeric_limits
+#include <memory>                   // for allocator_traits<>::value_type
+#include <stdexcept>                // for runtime_error
+#include <type_traits>              // for __strip_reference_wrapper<>::__type
+
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 using namespace std;
 
-thread_local Direction RIndex::dir = BACKWARD;
-thread_local BRExtraCharPtr RIndex::extraChar;
+// ============================================================================
+// CLASS IndexInterface
+// ============================================================================
 
-thread_local vector<vector<BRPosExt>> RIndex::stacks;
-thread_local vector<BitParallelED> RIndex::matrices;
+thread_local Direction IndexInterface::dir = BACKWARD;
+thread_local ExtraCharPtr IndexInterface::extraChar;
 
+thread_local vector<vector<FMPosExt>> IndexInterface::stacks;
+thread_local vector<BitParallelED64> IndexInterface::matrices;
+thread_local vector<BitParallelED128> IndexInterface::matrices128;
 
-#ifndef ENABLE_BENCHMARK_FUNCTIONALITY
-
-/**
- * Read a binary file and stores content in sdsl int_vector
- * @param filename File name
- * @param intVector output int_vector (contents will be overwritten)
- * @returns True if successful, false otherwise
- */
-bool readIntVector(const std::string& filename, sdsl::int_vector<>& intVector) {
-    std::ifstream ifs(filename, std::ios::binary);
-    if (!ifs) {
-        return false;
-    }
-    intVector.load(ifs);
-    ifs.close();
-    return true;
-}
-
-#endif
+thread_local Strand IndexInterface::strand = FORWARD_STRAND;
+thread_local PairStatus IndexInterface::pairStatus = FIRST_IN_PAIR;
 
 // ----------------------------------------------------------------------------
-// ROUTINES FOR INITIALIZATION
+// PREPROCESSING ROUTINES
 // ----------------------------------------------------------------------------
 
-
-void RIndex::fromFiles(const string& baseFile, bool verbose) {
-
+void IndexInterface::readTagCompAndCounts(const string& baseFile,
+                                          bool verbose) {
     // read the compiled info
     {
         ifstream ifs(baseFile + ".comp");
         if (!ifs) {
-            std::cout <<
+            logger.logWarning(
                 "The index was built with an older version of bmove-build or "
                 "the compile info (" +
                 baseFile +
                 ".comp) is missing! "
-                "Proceed with caution or rebuild the index!." << std::endl;
+                "Proceed with caution or rebuild the index!.");
         } else {
 
             size_t build_length_t_size;
             ifs >> build_length_t_size;
-            if (build_length_t_size != sizeof(length_t)) {
-                size_t thisSize = sizeof(length_t) * 8;
-                build_length_t_size *= 8;
-
-                throw runtime_error(
-                    "The index was built with a compiled version that uses " +
-                    to_string(build_length_t_size) +
-                    "-bit numbers, while the current programme was compiled "
-                    "using " +
-                    to_string(thisSize) +
-                    "-bit numbers. Recompile the programme with the correct "
-                    "THIRTY_TWO flag set.");
-            }
         }
     }
     // Check the build tag of the file
@@ -90,29 +82,31 @@ void RIndex::fromFiles(const string& baseFile, bool verbose) {
         length_t tag = 0;
         ifstream ifs(baseFile + ".tag");
         if (!ifs) {
-            std::cout << 
+            logger.logWarning(
                 "The index was built with an older version of bmove-build or "
                 "the tag is missing! "
-                "Proceed with caution or update re-build the index." << std::endl;
+                "Proceed with caution or update re-build the index.");
         } else {
             ifs >> tag;
             ifs.close();
             if (tag < BMOVE_BUILD_INDEX_TAG) {
-                std::cout << 
+                logger.logWarning(
                     "The index was built with an older version of "
                     "bmove-build. "
-                    "Proceed with caution or update re-build the index." << std::endl;
+                    "Proceed with caution or update re-build the index.");
             } else if (tag > BMOVE_BUILD_INDEX_TAG) {
-                std::cout << 
+                logger.logDeveloper(
                     "The index was built with a newer version of "
                     "bmove-build. "
-                    "Proceed with caution or update re-build the index." << std::endl;
+                    "Proceed with caution or update re-build the index.");
             }
         }
     }
 
+    stringstream ss;
     if (verbose) {
-        std::cout << "Reading " << baseFile << ".cct" << "..." << std::endl;
+        ss << "Reading " << baseFile << ".cct" << "...";
+        logger.logInfo(ss);
     }
 
     // Read the counts table
@@ -130,116 +124,103 @@ void RIndex::fromFiles(const string& baseFile, bool verbose) {
     }
     textLength = cumCount;
     sigma = Alphabet<ALPHABET>(charCounts);
+}
 
+void IndexInterface::readSequenceNamesAndPositions(const string& baseFN,
+                                                   bool verbose) {
+    stringstream ss;
     if (verbose) {
-
-#ifndef ENABLE_BENCHMARK_FUNCTIONALITY
-
-        std::cout << "Reading " << baseFile << ".plcp..." << std::endl;
+        ss << "Reading " << baseFile << ".pos...";
+        logger.logInfo(ss);
     }
-    if (!plcp.read(baseFile + ".plcp")) {
-        throw runtime_error("Cannot open file: " + baseFile + ".plcp");
-    }
-
-    if (verbose) {
-#endif
-
-        std::cout << "Reading " << baseFile << ".move..." << std::endl;
-    }
-    if (!move.load(baseFile, verbose)) {
-        throw runtime_error("Error loading move file: " + baseFile + ".move");
+    // read the start positions
+    if (!readArray(baseFile + ".pos", startPos)) {
+        throw runtime_error("Cannot open file: " + baseFile + ".pos");
     }
 
     if (verbose) {
-#ifndef ENABLE_BENCHMARK_FUNCTIONALITY
+        ss << "Reading " << baseFile << ".sna...";
+        logger.logInfo(ss);
+    }
+    {
+        seqNames.reserve(startPos.size());
+        ifstream ifs(baseFile + ".sna", ios::binary);
+        if (!ifs) {
+            throw runtime_error("Cannot open file: " + baseFile + ".sna");
+        }
 
-        std::cout << "Reading " << baseFile << ".smpf..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".smpf", samplesFirst)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".smpf");
-    }
+        while (ifs.good()) {
+            size_t len;
+            ifs.read(reinterpret_cast<char*>(&len), sizeof(len));
 
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".smpl..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".smpl", samplesLast)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".smpl");
-    }
+            string str(len, ' ');
+            ifs.read(&str[0], len);
 
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".prdf..." << std::endl;
-    }
-    if (!predFirst.read(baseFile + ".prdf")) {
-        throw runtime_error("Cannot open file: " + baseFile + ".prdf");
-    }
+            seqNames.push_back(str);
+        }
 
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".prdl..." << std::endl;
-    }
-    if (!predLast.read(baseFile + ".prdl")) {
-        throw runtime_error("Cannot open file: " + baseFile + ".prdl");
-    }
-
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".ftr..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".ftr", firstToRun)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".ftr");
-    }
-
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".ltr..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".ltr", lastToRun)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".ltr");
-    }
-
-    if (verbose) {
-#endif
-
-
-        std::cout << "Reading " << baseFile << ".rev.move..." << std::endl;
-    }
-    if (!moveR.load(baseFile + ".rev", verbose)) {
-        throw runtime_error("Error loading reverse move file: " + baseFile + ".rev.move");
-    }
-
-    if (verbose) {
-#ifndef ENABLE_BENCHMARK_FUNCTIONALITY
-
-        std::cout << "Reading " << baseFile << ".rev.smpf..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".rev.smpf", revSamplesFirst)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".rev.smpf");
-    }
-
-    if (verbose) {
-        std::cout << "Reading " << baseFile << ".rev.smpl..." << std::endl;
-    }
-    if (!readIntVector(baseFile + ".rev.smpl", revSamplesLast)) {
-        throw runtime_error("Cannot open file: " + baseFile + ".rev.smpl");
-    }
-
-    if (verbose) {
-#endif
+        ifs.close();
     }
 }
 
-void RIndex::populateTable(bool verbose) {
-    if (verbose) {
-        cout << "Populating FM-range table with " << wordSize << "-mers...";
+bool IndexInterface::readArray(const string& filename,
+                               vector<length_t>& array) {
+    int fd = open(filename.c_str(), O_RDONLY);
+    if (fd == -1) {
+        // Handle error
+        return false;
     }
-    cout.flush();
+
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        close(fd);
+        return false;
+    }
+
+    size_t fileSize = sb.st_size;
+    if (fileSize % sizeof(length_t) != 0) {
+        close(fd);
+        return false;
+    }
+
+    size_t numElements = fileSize / sizeof(length_t);
+
+    void* mapped = mmap(NULL, fileSize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        close(fd);
+        return false;
+    }
+
+    length_t* data = static_cast<length_t*>(mapped);
+    try {
+        array.assign(data, data + numElements);
+    } catch (...) {
+        munmap(mapped, fileSize);
+        throw;
+    }
+
+    munmap(mapped, fileSize);
+    close(fd);
+
+    return true;
+}
+
+void IndexInterface::populateTable(bool verbose) {
+    if (verbose) {
+        stringstream ss;
+        ss << "Populating FM-range table with " << wordSize << "-mers...";
+        logger.logInfo(ss);
+    }
 
     Kmer::setWordSize(wordSize);
 
-    table.resize(1 << (2 * wordSize)); // 2 << wordSize is 4^wordSize
-    setDirection(FORWARD);
+    table.reserve(1 << (2 * wordSize)); // 2 << wordSize is 4^wordSize (DNA)
+    setDirection(FORWARD, false);       // table must have bidirectional ranges
 
     string word;
-    vector<BRPosExt> stack;
+    vector<FMPosExt> stack;
     Counters counters;
-    extendBRPos(getInitialSample(), stack, counters);
+    extendFMPos(getCompleteRange(), stack, counters);
     while (!stack.empty()) {
         auto curr = stack.back();
         stack.pop_back();
@@ -249,422 +230,24 @@ void RIndex::populateTable(bool verbose) {
 
         if (curr.getRow() == wordSize) { // max depth reached
             Kmer k(word);
-            auto sample = curr.getSample();
-            auto newPosRange = move.computeRunIndices(sample.getRanges().getRangeSA());
-            SAPositionRangePair ranges(newPosRange, sample.getRanges().getRangeSARev());
-            sample.setRanges(ranges);
-            table.insert(make_pair(k, std::move(sample)));
+            updateRangeSARuns(curr.getRangesMutable());
+            table.insert(make_pair(k, std::move(curr.getRanges())));
 
         } else // add extra characters
-            extendBRPos(curr.getSample(), stack, counters, curr.getRow());
-    }
-    if (verbose) {
-        cout << "done." << endl;
+            extendFMPos(curr.getRanges(), stack, counters, curr.getRow());
     }
 }
-
-// ----------------------------------------------------------------------------
-// ROUTINES FOR EXACT PATTERN MATCHING
-// ----------------------------------------------------------------------------
-
-BRSample RIndex::matchStringBidirectionally(const Substring& pattern,
-                                            BRSample sampleOfPrev,
-                                            Counters& counters) const {
-
-    for (length_t i = 0; i < pattern.size(); i++) {
-
-        char c = pattern[i];
-        if (!addChar(c, sampleOfPrev, counters)) {
-            // sampleOfPrev was made empty
-            break;
-        }
-    }
-
-    return sampleOfPrev;
-}
-
-bool RIndex::addChar(const char& c, BRSample& startSample,
-                     Counters& counters) const {
-
-    int posInAlphabet = sigma.c2i((unsigned char)c);
-    if (posInAlphabet > -1) {
-
-        assert(posInAlphabet < ALPHABET);
-        if ((this->*extraChar)(posInAlphabet, startSample, startSample)) {
-            // each character that we look at is a new node that is visited
-            counters.incNodeCounter();
-            return true;
-        }
-    }
-    // the range is now empty
-    return false;
-}
-
-
-length_t RIndex::phi(length_t pos) const {
-    
-    // find predecessor of pos
-    length_t predRank = predFirst.predecessorRankCircular(pos);
-    length_t pred = predFirst.select(predRank);
-
-    // distance from predecessor
-    length_t delta = pred < pos ? pos - pred : pos + 1;
-
-    // check if phi(SA[0]) is not called
-    assert(firstToRun[predRank] > 0);
-
-    length_t prev_sample = samplesLast[firstToRun[predRank]-1];
-
-    return (prev_sample + delta) % textLength;
-}
-
-
-length_t RIndex::phiInverse(length_t pos) const {
-
-    // find predecessor of pos
-    length_t predRank = predLast.predecessorRankCircular(pos);
-    length_t pred = predLast.select(predRank);
-
-    // distance from predecessor
-    length_t delta = pred < pos ? pos - pred : pos + 1;
-
-    // check if phiInverse(SA[n-1]) is not called
-    assert(lastToRun[predRank] < samplesFirst.size()-1);
-
-    length_t prev_sample = samplesFirst[lastToRun[predRank]+1];
-
-    return (prev_sample + delta) % textLength;
-}
-
-length_t RIndex::getToehold(const PositionRange& range, const length_t c) const {
-
-    length_t endRunHead = move.getRunHead(range.getEndPos());
-
-    Position previousOcc;
-    move.getPreviousOccurence(range, previousOcc, c);
-    
-    if (endRunHead == c) {
-        return samplesFirst[previousOcc.runIndex];
-    }
-    return samplesLast[previousOcc.runIndex];
-
-}
-
-
-length_t RIndex::getToeholdRev(const PositionRange& range, const length_t c) const {
-
-    length_t endRunHead = moveR.getRunHead(range.getEndPos());
-
-    Position previousOcc;
-    moveR.getPreviousOccurence(range, previousOcc, c);
-
-    if (endRunHead == c) {
-        return revSamplesFirst[previousOcc.runIndex];
-    }
-    return revSamplesLast[previousOcc.runIndex];
-
-}
-
-
-length_t RIndex::getInitialToehold() const {
-    return samplesLast[samplesLast.size() - 1];
-}
-
 
 // ----------------------------------------------------------------------------
 // ROUTINES FOR APPROXIMATE PATTERN MATCHING
 // ----------------------------------------------------------------------------
 
-bool RIndex::findRangesWithExtraCharBackward(
-    length_t positionInAlphabet, const BRSample& sampleOfP,
-    BRSample& childSample) const {
-
-    // first make the trivial range by searching cP using B
-    PositionRange fwdRangeOfP = sampleOfP.getRanges().getRangeSA();
-
-    // If the run indices of revRangeOfP are not valid, compute them
-    if (! fwdRangeOfP.getRunIndicesValid()) {
-        fwdRangeOfP = move.computeRunIndices(fwdRangeOfP);
-    }
-
-    assert(positionInAlphabet < ALPHABET);
-    PositionRange newFwdRange;
-    move.leftExtension(fwdRangeOfP, newFwdRange, positionInAlphabet, false);
-
-    if (newFwdRange.empty()) {
-        SAPositionRangePair childRanges = SAPositionRangePair(newFwdRange, newFwdRange);
-        // set empty range
-        childSample = BRSample(childRanges, 0, 0, 0);
-        return false;
-    }
-
-    // then make the less trivial range by counting the sizes of the ranges
-    // of dP for all d < c using B
-
-    // first get the start of the range we are looking for of the parent
-    PositionRange revRangeOfP = sampleOfP.getRanges().getRangeSARev();
-
-    if(newFwdRange.width() == fwdRangeOfP.width()) {
-        // only increment length
-        SAPositionRangePair childRanges = SAPositionRangePair(newFwdRange, revRangeOfP);
-        childSample = BRSample(childRanges, sampleOfP.getTextPos(), 
-                                sampleOfP.getOffset() + 1, sampleOfP.getLength() + 1);
-        return true;
-    }
-    length_t s = revRangeOfP.getBeginPos().posIndex;
-
-    // get the start of the child within this range
-    // find the number of occurrences of chars smaller than c in the parent
-    // range
-
-    length_t x = move.getSmallerCharsCountInRange(fwdRangeOfP, positionInAlphabet);
-
-    // make the new range with width equal to that of the trivial range
-    PositionRange newRevRange = PositionRange(
-        Position::getPositionWithIndex(s + x, revRangeOfP.getBeginPos()), 
-        Position::getPositionWithIndex(s + x + newFwdRange.width() - 1, revRangeOfP.getEndPos()));
-    newRevRange.setRunIndicesValid(false);
-
-
-    SAPositionRangePair childRanges = SAPositionRangePair(newFwdRange, newRevRange);
-
-    // aP occurs for some a != c, sample position must be updated
-
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
-    length_t newTextpos = 0;
-#else
-    length_t newTextpos = getToehold(fwdRangeOfP, positionInAlphabet);
-#endif
-
-    // update sample with newTextPos, reset offset, increment length
-    childSample = BRSample(childRanges, newTextpos, 0, sampleOfP.getLength() + 1);
-    return true;
-}
-
-bool RIndex::findRangesWithExtraCharForward(
-    length_t positionInAlphabet, const BRSample& sampleOfP,
-    BRSample& childSample) const {
-
-    // first make the trivial range by searching (Pc)' using B'  if
-    // searching forward we need to use B' so we need the reverse range
-    PositionRange revRangeOfP = sampleOfP.getRanges().getRangeSARev();
-
-    // If the run indices of revRangeOfP are not valid, compute them
-    if (! revRangeOfP.getRunIndicesValid()) {
-        revRangeOfP = moveR.computeRunIndices(revRangeOfP);
-    }
-
-    assert(positionInAlphabet < ALPHABET);
-    PositionRange newRevRange;
-    moveR.leftExtension(revRangeOfP, newRevRange, positionInAlphabet, false);
-
-    if (newRevRange.empty()) {
-        SAPositionRangePair childRanges = SAPositionRangePair(newRevRange, newRevRange);
-        // set empty range
-        childSample = BRSample(childRanges, 0, 0, 0);
-        return false;
-    }
-
-    // first get the start of the range we are looking for of the parent
-    PositionRange fwdRangeOfP = sampleOfP.getRanges().getRangeSA();
-
-    if(newRevRange.width() == revRangeOfP.width()) {
-        // only increment length
-        SAPositionRangePair childRanges = SAPositionRangePair(fwdRangeOfP, newRevRange);
-        childSample = BRSample(childRanges, sampleOfP.getTextPos(), 
-                                sampleOfP.getOffset(), sampleOfP.getLength() + 1);
-        return true;
-    }
-
-    // then make the less trivial range by counting the size of the range of
-    // (Pd)' using B' (forward)
-    length_t s = fwdRangeOfP.getBeginPos().posIndex;
-
-    // get the start of the child within this range
-    // find the number of occurrences of chars smaller than c in the parent
-    // range
-
-    length_t x = moveR.getSmallerCharsCountInRange(revRangeOfP, positionInAlphabet);
-
-    // make the new range
-    PositionRange newFwdRange = PositionRange(
-        Position::getPositionWithIndex(s + x, fwdRangeOfP.getBeginPos()), 
-        Position::getPositionWithIndex(s + x + newRevRange.width() - 1, fwdRangeOfP.getEndPos()));
-    newFwdRange.setRunIndicesValid(false);
-
-    SAPositionRangePair childRanges = SAPositionRangePair(newFwdRange, newRevRange);
-    
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
-    length_t newTextpos = 0;
-#else
-    // Pa occurs for some a != c, sample position must be updated
-    length_t newTextpos = textLength - 1 - getToeholdRev(revRangeOfP, positionInAlphabet);
-#endif
-
-    // update sample with newTextPos, reset offset, increment length
-    childSample = BRSample(childRanges, newTextpos, 
-                            sampleOfP.getLength(), sampleOfP.getLength() + 1);
-    return true;
-}
-
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
-const size_t RIndex::approxMatchesNaive(const string& pattern,
-                                                 length_t maxED,
-                                                 Counters& counters) {
-#else
-const vector<TextOcc> RIndex::approxMatchesNaive(const string& pattern,
-                                                 length_t maxED,
-                                                 Counters& counters) {
-#endif
-
-    counters.resetCounters();
-    BROccurrences occurrences;
-
-    BitParallelED matrix;
-    matrix.setSequence(pattern);
-    matrix.initializeMatrix(maxED);
-
-    setDirection(FORWARD);
-
-    vector<BRPosExt> stack;
-    stack.reserve((pattern.size() + maxED + 1) * (sigma.size() - 1));
-
-    extendBRPos(getInitialSample(), stack, counters, 0);
-
-    length_t lastcol = pattern.size();
-
-    while (!stack.empty()) {
-        const BRPosExt currentNode = stack.back();
-        stack.pop_back();
-        length_t row = currentNode.getDepth();
-
-        if (row >= matrix.getNumberOfRows()) {
-            continue;
-        }
-
-        bool valid = matrix.computeRow(row, currentNode.getCharacter());
-
-        if (!valid) {
-            // backtrack
-            continue;
-        }
-
-        if (matrix.inFinalColumn(row)) {
-
-            // full pattern was matched
-            if (matrix(row, lastcol) <= maxED) {
-                occurrences.addIndexOcc(currentNode, matrix(row, lastcol));
-            }
-        }
-
-        extendBRPos(currentNode, stack, counters);
-    }
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
-    // Count the total width of all occurrences:
-    size_t totalWidth = 0;
-    for (const auto& occ : occurrences.getIndexOccurrences()) {
-        totalWidth += occ.getWidth();
-    }
-    return totalWidth;
-#else
-
-    return getUniqueTextOccurrences(occurrences, maxED, counters);
-#endif
-}
-
-void RIndex::recApproxMatchEditNaive(const Search& s, const BROcc& startMatch,
-                                      BROccurrences& occ,
-                                      const vector<Substring>& parts,
-
-                                      Counters& counters, const int& idx) {
-    const Substring& p = parts[s.getPart(idx)];   // this part
-    const length_t& maxED = s.getUpperBound(idx); // maxED for this part
-    const length_t& minED = s.getLowerBound(idx); // minED for this part
-    const length_t& pSize = p.size();
-    const Direction& dir = s.getDirection(idx); // direction
-
-    // set the direction
-    setDirection(dir);
-
-    length_t matrixID = s.getPart(idx) + (dir == BACKWARD) * s.getNumParts();
-    auto& bpED = matrices[matrixID];
-
-    if (!bpED.sequenceSet()) {
-        bpED.setSequence(p);
-    }
-
-    bpED.initializeMatrix(maxED, {(uint)startMatch.getDistance()});
-
-    if (bpED.getLastColumn(0) == pSize && bpED(0, pSize) <= maxED) {
-        // an occurrence found by gapping entire part
-        if (s.isEnd(idx)) {
-            occ.addIndexOcc(startMatch.getSample(), bpED(0, pSize),
-                         startMatch.getDepth());
-        } else {
-            // go to the next index
-            recApproxMatchEditNaive(s,
-                                    BROcc(startMatch.getSample(),
-                                          bpED(0, pSize),
-                                          startMatch.getDepth()),
-                                    occ, parts, counters, idx + 1);
-            // set direction correct again
-            setDirection(dir);
-        }
-    }
-
-    auto& stack = stacks[idx]; // stack for this partition
-
-    extendBRPos(startMatch.getSample(), stack, counters);
-
-    while (!stack.empty()) {
-        const auto currentNode = stack.back();
-        stack.pop_back();
-
-        const length_t& row = currentNode.getRow();
-        const length_t firstCol = bpED.getFirstColumn(row);
-        const length_t lastCol = bpED.getLastColumn(row);
-
-        bool valid = bpED.computeRow(row, currentNode.getCharacter());
-
-        if (!valid) {
-            // backtracking
-            continue;
-        }
-
-        if (lastCol == pSize && bpED(row, pSize) <= maxED &&
-            bpED(row, pSize) >= minED) {
-            if (s.isEnd(idx)) {
-                occ.addIndexOcc(currentNode.getSample(), bpED(row, pSize),
-                             startMatch.getDepth() + currentNode.getDepth());
-            } else {
-                // go deeper in search
-                Direction originalDir = dir;
-                recApproxMatchEditNaive(
-                    s,
-                    BROcc(currentNode.getSample(), bpED(row, pSize),
-                          startMatch.getDepth() + currentNode.getDepth()),
-                    occ, parts, counters, idx + 1);
-                // set direction correct again
-                setDirection(originalDir);
-            }
-        }
-        if (firstCol == pSize) {
-            // final cell of matrix filled in => backtracking
-            continue;
-        }
-
-        // extend to the children
-        extendBRPos(currentNode, stack, counters);
-    }
-}
-
-void RIndex::recApproxMatchEditOptimized(
-    const Search& s, const BROcc& startMatch, BROccurrences& occ,
+void IndexInterface::recApproxMatchEdit(
+    const Search& s, const FMOcc& startMatch, Occurrences& occ,
     const vector<Substring>& parts, Counters& counters, const int& idx,
-    const vector<BRPosExt>& descPrevDir, const vector<uint>& initPrevDir,
-    const vector<BRPosExt>& descNotPrevDir,
-    const vector<uint>& initNotPrevDir) {
-
+    const vector<FMPosExt>& descPrevDir, const vector<uint16_t>& initPrevDir,
+    const vector<FMPosExt>& descNotPrevDir,
+    const vector<uint16_t>& initNotPrevDir) {
     // shortcut Variables
     const Substring& p = parts[s.getPart(idx)];      // this part
     const length_t& maxED = s.getUpperBound(idx);    // maxED for this part
@@ -672,28 +255,37 @@ void RIndex::recApproxMatchEditOptimized(
     const bool& dSwitch = s.getDirectionSwitch(idx); // has direction switched?
     auto& stack = stacks[idx];                       // stack for this partition
     size_t matrixIdx = s.getPart(idx) + (dir == BACKWARD) * s.getNumParts();
-    BitParallelED& bpED = matrices[matrixIdx]; // matrix for this partition
+
+    // select the correct bit parallel matrix
+    IBitParallelED* bpED;
+    if (maxED <= BitParallelED64::getMatrixMaxED()) {
+        bpED = &matrices[matrixIdx]; // Assuming matrices is of a type
+                                     // compatible with IBitParallelED
+    } else {
+        bpED = &matrices128[matrixIdx]; // Assuming matrices128 is of a type
+                                        // compatible with IBitParallelED
+    }
 
     // get the correct initED and descendants based on switch
-    const vector<uint>& initEds = dSwitch ? initNotPrevDir : initPrevDir;
-    const vector<BRPosExt>& descendants =
+    const vector<uint16_t>& initEds = dSwitch ? initNotPrevDir : initPrevDir;
+    const vector<FMPosExt>& descendants =
         dSwitch ? descNotPrevDir : descPrevDir;
-    const vector<uint>& initOther = dSwitch ? initPrevDir : initNotPrevDir;
-    const vector<BRPosExt>& descOther = dSwitch ? descPrevDir : descNotPrevDir;
+    const vector<uint16_t>& initOther = dSwitch ? initPrevDir : initNotPrevDir;
+    const vector<FMPosExt>& descOther = dSwitch ? descPrevDir : descNotPrevDir;
 
     // set the direction
-    setDirection(dir);
+    setDirection(dir, s.isUnidirectionalBackwards(idx));
 
-    // calculate necessary increase for first column of bandmatrix
-    vector<uint> initED;
+    // calculate necessary increase for first column of bandMatrix
+    vector<uint16_t> initED;
     if (initEds.empty()) {
-        initED = vector<uint>(1, startMatch.getDistance());
+        initED = vector<uint16_t>(1, startMatch.getDistance());
     } else {
-        length_t prevED =
+        uint16_t prevED =
             (dSwitch ? *min_element(initEds.begin(), initEds.end())
                      : initEds[0]);
-        length_t increase = startMatch.getDistance() - prevED;
-        initED = vector<uint>(initEds.size());
+        uint16_t increase = startMatch.getDistance() - prevED;
+        initED = vector<uint16_t>(initEds.size());
         for (size_t i = 0; i < initED.size(); i++) {
             initED[i] = initEds[i] + increase;
         }
@@ -701,38 +293,38 @@ void RIndex::recApproxMatchEditOptimized(
 
     // encode the sequence of this partition in the matrix if this has not been
     // done before
-    if (!bpED.sequenceSet())
-        bpED.setSequence(p);
+    if (!bpED->sequenceSet())
+        bpED->setSequence(p);
 
     // initialize bit-parallel matrix
-    bpED.initializeMatrix(maxED, initED);
+    bpED->initializeMatrix(maxED, initED);
 
     // initialize  cluster
-    BRCluster clus(bpED.getSizeOfFinalColumn(), maxED, startMatch.getDepth(),
-                 startMatch.getShift());
+    Cluster cluster(bpED->getSizeOfFinalColumn(), maxED, startMatch.getDepth(),
+                    startMatch.getShift());
 
-    if (bpED.inFinalColumn(0)) {
+    if (bpED->inFinalColumn(0)) {
         // the first row is part of the final column of the banded matrix
-        // Update the first cell of the cluster with the startmatch and the
-        // value found at the psizeth column of the initialization row the
+        // Update the first cell of the cluster with the startMatch and the
+        // value found at the pSize'th column of the initialization row the
         // character does not matter as the first cell of a cluster is never
         // a descendant of any of the other cells in the cluster, so this
         // cell will not be reused for the next part of the pattern
-        clus.setValue(0, BRPosExt((char)0, startMatch.getSample(), 0),
-                      bpED(0, p.size()));
+        cluster.setValue(0, FMPosExt((char)0, startMatch.getRanges(), 0),
+                         bpED->at(0, p.size()));
     }
 
     if (!descendants.empty()) {
         // fill in the matrix for the descendants
 
-        length_t maxRow = bpED.getNumberOfRows() - 1;
+        length_t maxRow = bpED->getNumberOfRows() - 1;
 
         for (length_t i = 0;
              i < descendants.size() && descendants[i].getDepth() <= maxRow;
              i++) {
 
             if (branchAndBound(
-                    bpED, clus, descendants[i], s, idx, parts, occ, counters,
+                    bpED, cluster, descendants[i], s, idx, parts, occ, counters,
                     initOther, descOther,
                     {descendants.begin() + i + 1, descendants.end()})) {
                 return;
@@ -743,59 +335,54 @@ void RIndex::recApproxMatchEditOptimized(
             return;
         }
 
-        BRSample sample = descendants.back().getSample();
+        SARangePair pair = descendants.back().getRanges();
         if (dSwitch) {
             // after a switch the ranges of final descendant should be
             // updated
-            sample = startMatch.getSample();
+            pair = startMatch.getRanges();
         }
 
         // push children of final descendant
-        extendBRPos(sample, stack, counters, descendants.back().getDepth());
+        extendFMPos(pair, stack, counters, descendants.back().getDepth());
 
     } else { // get the initial nodes to check
-        extendBRPos(startMatch.getSample(), stack, counters);
+        extendFMPos(startMatch.getRanges(), stack, counters);
     }
 
     while (!stack.empty()) {
-        const BRPosExt currentNode = stack.back();
+        const FMPosExt currentNode = stack.back();
         stack.pop_back();
 
-        if (branchAndBound(bpED, clus, currentNode, s, idx, parts, occ,
+        if (branchAndBound(bpED, cluster, currentNode, s, idx, parts, occ,
                            counters, initOther, descOther)) {
 
             continue;
         }
-
-        // continue the search for children of this node in-index
-        extendBRPos(currentNode, stack, counters);
+        extendFMPos(currentNode, stack, counters);
     }
 }
 
-bool RIndex::branchAndBound(BitParallelED& bpED, BRCluster& clus,
-                             const BRPosExt& currentNode, const Search& s,
-                             const length_t& idx,
-                             const vector<Substring>& parts, BROccurrences& occ,
-                             Counters& counters, const vector<uint>& initOther,
-                             const vector<BRPosExt>& descOther,
-                             const vector<BRPosExt>& remainingDesc) {
-
+bool IndexInterface::branchAndBound(
+    IBitParallelED* bpED, Cluster& cluster, const FMPosExt& currentNode,
+    const Search& s, const length_t& idx, const vector<Substring>& parts,
+    Occurrences& occ, Counters& counters, const vector<uint16_t>& initOther,
+    const vector<FMPosExt>& descOther, const vector<FMPosExt>& remainingDesc) {
     // compute, in a bit-parallel manner, a single row of the ED matrix
     const length_t row = currentNode.getDepth();
-    bool validED = bpED.computeRow(row, currentNode.getCharacter());
+    bool validED = bpED->computeRow(row, currentNode.getCharacter());
 
     // check if we have reached the final column of the matrix
-    if (bpED.inFinalColumn(row)) {
+    if (bpED->inFinalColumn(row)) {
         // update the cluster
-        length_t clusIdx = clus.size() + row - bpED.getNumberOfRows();
-        clus.setValue(clusIdx, currentNode,
-                      bpED(row, bpED.getNumberOfCols() - 1));
+        length_t clusterIdx = cluster.size() + row - bpED->getNumberOfRows();
+        cluster.setValue(clusterIdx, currentNode,
+                         bpED->at(row, bpED->getNumberOfCols() - 1));
 
-        if (!validED || bpED.onlyVerticalGapsLeft(row)) {
+        if (!validED || bpED->onlyVerticalGapsLeft(row)) {
             // no need to further explore this branch for this part -> go to
             // next part
 
-            goDeeper(clus, idx + 1, s, parts, occ, counters, descOther,
+            goDeeper(cluster, idx + 1, s, parts, occ, counters, descOther,
                      initOther, remainingDesc);
             return true;
         }
@@ -804,12 +391,12 @@ bool RIndex::branchAndBound(BitParallelED& bpED, BRCluster& clus,
     return !validED;
 }
 
-void RIndex::goDeeper(BRCluster& cluster, const length_t& nIdx, const Search& s,
-                       const vector<Substring>& parts, BROccurrences& occ,
-                       Counters& counters, const vector<BRPosExt>& descOtherD,
-                       const vector<uint>& initOtherD,
-                       const vector<BRPosExt>& remDesc) {
-
+void IndexInterface::goDeeper(Cluster& cluster, const length_t& nIdx,
+                              const Search& s, const vector<Substring>& parts,
+                              Occurrences& occ, Counters& counters,
+                              const vector<FMPosExt>& descOtherD,
+                              const vector<uint16_t>& initOtherD,
+                              const vector<FMPosExt>& remDesc) {
     bool isEdge = s.isEdge(nIdx - 1);
     const auto& lowerBound = s.getLowerBound(nIdx - 1);
 
@@ -818,21 +405,23 @@ void RIndex::goDeeper(BRCluster& cluster, const length_t& nIdx, const Search& s,
         // match)
         if (nIdx == parts.size()) {
             auto matches = cluster.reportCentersAtEnd();
-            for (const auto& match : matches) {
+            for (auto& match : matches) {
                 if (match.isValid() && match.getDistance() >= lowerBound) {
-                    occ.addIndexOcc(match);
+                    match.setStrand(strand);
+                    match.setPairStatus(pairStatus);
+                    occ.addFMOcc(match);
                 }
             }
         } else {
-            BROcc match = cluster.reportDeepestMinimum(this->dir);
+            FMOcc match = cluster.reportDeepestMinimum(this->dir);
             if (match.isValid() && match.getDistance() >= lowerBound) {
                 // go deeper in search
                 Direction originalDir = this->dir;
-                recApproxMatchEditOptimized(s, match, occ, parts, counters,
-                                            nIdx, {}, {}, descOtherD,
-                                            initOtherD);
+                recApproxMatchEdit(s, match, occ, parts, counters, nIdx, {}, {},
+                                   descOtherD, initOtherD);
                 // set direction back again
-                setDirection(originalDir);
+                setDirection(originalDir,
+                             s.isUnidirectionalBackwards(nIdx - 1));
             }
         }
 
@@ -841,10 +430,10 @@ void RIndex::goDeeper(BRCluster& cluster, const length_t& nIdx, const Search& s,
 
     // one of the later stages will return to this point, so keep track of
     // the descendants and eds at this branch
-    vector<BRPosExt> descendants;
-    vector<uint> initEds;
+    vector<FMPosExt> descendants;
+    vector<uint16_t> initEds;
 
-    BROcc newMatch = cluster.getClusterCentra(lowerBound, descendants, initEds);
+    FMOcc newMatch = cluster.getClusterCentra(lowerBound, descendants, initEds);
     if (!newMatch.isValid()) {
         // no centre above lower bound found
         return;
@@ -869,10 +458,10 @@ void RIndex::goDeeper(BRCluster& cluster, const length_t& nIdx, const Search& s,
 
     if (switchAfter) {
         // switching direction as this is not the end of a search direction,
-        // this means we'll get back here, thus range of newmatch should be
+        // this means we'll get back here, thus range of newMatch should be
         // deepest point in branch
         if (!descendants.empty()) {
-            newMatch.setSample(descendants.back().getSample());
+            newMatch.setRanges(descendants.back().getRanges());
 
             //  edit distance for search in other direction should be lowest
             //  value possible
@@ -881,45 +470,291 @@ void RIndex::goDeeper(BRCluster& cluster, const length_t& nIdx, const Search& s,
 
         Direction originalDir = this->dir;
 
-        recApproxMatchEditOptimized(s, newMatch, occ, parts, counters, nIdx,
-                                    descendants, initEds, descOtherD,
-                                    initOtherD);
+        recApproxMatchEdit(s, newMatch, occ, parts, counters, nIdx, descendants,
+                           initEds, descOtherD, initOtherD);
 
         // set direction back again
-        setDirection(originalDir);
+        // s.isUnidirectionalBackwards() is always false here
+        setDirection(originalDir, s.isUnidirectionalBackwards(nIdx - 1));
     } else {
         // go deeper on next piece
-        recApproxMatchEditOptimized(s, newMatch, occ, parts, counters, nIdx,
-                                    descendants, initEds, descOtherD,
-                                    initOtherD);
+        recApproxMatchEdit(s, newMatch, occ, parts, counters, nIdx, descendants,
+                           initEds, descOtherD, initOtherD);
     }
 }
 
+// ----------------------------------------------------------------------------
+// EXTEND ROUTINES
+// ----------------------------------------------------------------------------
 
-void RIndex::recApproxMatchHamming(const Search& s, const BROcc& startMatch,
-                                    BROccurrences& occ,
-                                    const vector<Substring>& parts,
-                                    Counters& counters, const int& idx) {
+void IndexInterface::extendFMPos(const SARangePair& parentRanges,
+                                 vector<FMPosExt>& stack, Counters& counters,
+                                 length_t row) const {
+    // iterate over the entire alphabet
+    for (length_t i = 1; i < sigma.size(); i++) {
 
+        SARangePair pairForNewChar;
+
+        // check if this character occurs in the specified range
+        if ((this->*extraChar)(i, parentRanges, pairForNewChar)) {
+            // push this range and character for the next iteration
+            stack.emplace_back(sigma.i2c(i), pairForNewChar, row + 1);
+
+            counters.inc(Counters::NODE_COUNTER);
+        }
+    }
+}
+
+void IndexInterface::extendFMPos(const FMPosExt& pos, vector<FMPosExt>& stack,
+                                 Counters& counters) const {
+    extendFMPos(pos.getRanges(), stack, counters, pos.getDepth());
+}
+
+// ----------------------------------------------------------------------------
+// ROUTINES FOR ACCESSING THE DATA STRUCTURE
+// ----------------------------------------------------------------------------
+
+SeqNameFound IndexInterface::findSeqName(TextOcc& t, length_t& seqID,
+                                         Counters& counters,
+                                         length_t largestStratum,
+                                         const DistanceMetric& metric,
+                                         const string& pattern) const {
+    // returns FOUND if successful without trimming
+    // returns FOUND_WITH_TRIMMING if trimming was needed
+    // return NOT_FOUND if no name could be found
+
+    auto& range = t.getRange();
+    const auto& begin = range.getBegin();
+    const auto& end = range.getEnd();
+
+    // find first start position greater than begin
+    auto it = upper_bound(startPos.begin(), startPos.end(), begin);
+    // as startPositions[0] == 0 we know that "it" points to at least the second
+    // element we need to move one back to find the start position of the
+    // sequence in which begin lies
+    length_t index = distance(startPos.begin(), --it);
+
+    // now we check if the end position lies in the same sequence
+    if (end <= startPos[index + 1]) {
+        // adapt the range to be relative to the start of the sequence
+        t.setIndexBegin(begin);
+        range = Range(begin - startPos[index], end - startPos[index]);
+        seqID = index;
+        return FOUND;
+    }
+
+    // begin and end of occurrence do not lie in the same sequence
+    if (metric == HAMMING) {
+        // do not allow trimming in case of hamming distance
+        return NOT_FOUND;
+    }
+
+    // option 1: begin is just before the end of the sequence
+    if ((startPos[index + 1] - begin) <= largestStratum) {
+        // try the next sequence
+        index++;
+        // update the beginning of the range and clip end to end of
+        // reference
+        range = Range(startPos[index], min(end, startPos[index + 1]));
+    }
+    // option 2: end is just over the start of the next sequence
+    else if ((end - startPos[index + 1]) <= largestStratum) {
+        // try clipping end
+        // update the end of the range
+        range = Range(begin, startPos[index + 1]);
+    } else {
+        return NOT_FOUND;
+    }
+    if (t.getRange().width() - range.width() + t.getDistance() >
+        largestStratum) {
+        return NOT_FOUND;
+    } else {
+        // as we cannot verify in text using bmove we assume that trimming X
+        // characters increases the score by X characters. In some cases this
+        // can be a too pessimistic assumption.
+        t = TextOcc(range,
+                    t.getDistance() + t.getRange().width() - range.width(),
+                    t.getStrand(), t.getPairStatus());
+    }
+
+    seqID = index;
+    length_t seqPosition = startPos[index];
+    // adapt the range to be relative to the start of the sequence
+    t.setIndexBegin(range.getBegin());
+    range = Range(range.getBegin() - seqPosition, range.getEnd() - seqPosition);
+    return FOUND_WITH_TRIMMING;
+}
+
+// ----------------------------------------------------------------------------
+// ROUTINES FOR EXACT PATTERN MATCHING
+// ----------------------------------------------------------------------------
+
+void IndexInterface::exactMatchesOutput(const string& s, Counters& counters,
+                                        vector<TextOcc>& tOcc) const {
+    if (s.size() == 0) {
+        return;
+    }
+
+    SARangePair completeRanges = getCompleteRange();
+
+    SARangeBackwards range = SARangeBackwards(
+        completeRanges.getRangeSA(), completeRanges.getToehold(),
+        completeRanges.getToeholdRepresentsEnd(),
+        completeRanges.getOriginalDepth());
+
+    length_t i = s.size();
+
+    for (; i-- > 0;) {
+        const auto& c = s[i];
+        auto pos = sigma.c2i(c);
+        if (pos == -1 || !findRangeWithExtraCharBackward(pos, range, range)) {
+            // c is not in alphabet or no updated range is empty, exact match
+            // impossible
+            return;
+        }
+        counters.inc(Counters::NODE_COUNTER);
+    }
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    return;
+#endif
+
+    // get all positions from the range
+    const auto& p = getBeginPositions(range, 0);
+
+    std::string CIGAR = "*"; // no CIGAR
+    // directly add occurrences
+    for (const auto& pos : p) {
+        tOcc.emplace_back(Range(pos, pos + s.size()), 0, CIGAR, strand,
+                          pairStatus);
+    }
+
+    counters.inc(Counters::TOTAL_REPORTED_POSITIONS, tOcc.size());
+}
+
+SARangePair
+IndexInterface::matchStringBidirectionally(const Substring& pattern,
+                                           SARangePair rangesOfPrev,
+                                           Counters& counters) const {
+    assert(pattern.getDirection() == dir);
+
+    for (length_t i = 0; i < pattern.size(); i++) {
+
+        char c = pattern[i];
+        if (!addChar(c, rangesOfPrev, counters)) {
+            // rangesOfPrev was made empty
+            break;
+        }
+    }
+
+    return rangesOfPrev;
+}
+
+bool IndexInterface::addChar(const char& c, SARangePair& startRange,
+                             Counters& counters) const {
+
+    int posInAlphabet = sigma.c2i((unsigned char)c);
+    if (posInAlphabet > -1) {
+
+        if ((this->*extraChar)(posInAlphabet, startRange, startRange)) {
+            // each character that we look at is a new node that is visited
+            counters.inc(Counters::NODE_COUNTER);
+            return true;
+        }
+    }
+    // the range is now empty or c does not exist in alphabet
+    startRange = SARangePair();
+    return false;
+}
+
+// ----------------------------------------------------------------------------
+// ROUTINES FOR APPROXIMATE MATCHING
+// ----------------------------------------------------------------------------
+
+void IndexInterface::approxMatchesNaive(const std::string& pattern,
+                                        length_t maxED, Counters& counters,
+                                        vector<TextOcc>& matches) {
+
+
+    Occurrences occurrences;
+
+    resetMatrices(1); // reset one matrix (both 64 and 128 bit)
+    IBitParallelED* matrix;
+    if (maxED > BitParallelED64::getMatrixMaxED()) {
+        matrix = &matrices128.front();
+    } else {
+        matrix = &matrices.front();
+    }
+    matrix->setSequence(pattern);
+    matrix->initializeMatrix(maxED);
+
+    setDirection(FORWARD, false);
+
+    vector<FMPosExt> stack;
+    stack.reserve((pattern.size() + maxED + 1) * (sigma.size() - 1));
+
+    extendFMPos(getCompleteRange(), stack, counters, 0);
+
+    length_t lastCol = pattern.size();
+
+    while (!stack.empty()) {
+        const FMPosExt currentNode = stack.back();
+        stack.pop_back();
+        length_t row = currentNode.getDepth();
+
+        if (row >= matrix->getNumberOfRows()) {
+            continue;
+        }
+
+        bool valid = matrix->computeRow(row, currentNode.getCharacter());
+
+        if (!valid) {
+            continue; // backtrack
+        }
+
+        if (matrix->inFinalColumn(row)) {
+            // full pattern was matched
+            if (matrix->at(row, lastCol) <= maxED) {
+                occurrences.addFMOcc(currentNode, matrix->at(row, lastCol),
+                                     strand, pairStatus);
+            }
+        }
+
+        extendFMPos(currentNode, stack, counters);
+    }
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    return;
+#endif
+
+    const auto& bundle = ReadBundle::createBundle(pattern, strand);
+    matches = getUniqueTextOccurrences(occurrences, maxED, counters, bundle);
+}
+
+void IndexInterface::recApproxMatchHamming(const Search& s,
+                                           const FMOcc& startMatch,
+                                           Occurrences& occ,
+                                           const vector<Substring>& parts,
+                                           Counters& counters, const int& idx) {
     // shortcut variables
     const Substring& p = parts[s.getPart(idx)]; // the current part
     const length_t& pSize = p.size();           // the size of the current part
     const Direction& d = s.getDirection(idx);   // direction of current part
     const length_t& maxED = s.getUpperBound(idx); // upper bound of current part
-    const length_t& minED = s.getLowerBound(idx); // lower bound of currentpart
-    setDirection(d);
+    const length_t& minED = s.getLowerBound(idx); // lower bound of current part
+    setDirection(d, s.isUnidirectionalBackwards(idx));
 
     // create vector for the scores
     vector<length_t> vec(p.size() + 1, 0);
-    // set root element of vector to the distance of the startmatch
+    // set root element of vector to the distance of the start match
     vec[0] = startMatch.getDistance();
     // get stack for current part
     auto& stack = stacks[idx];
 
-    extendBRPos(startMatch.getSample(), stack, counters);
+    extendFMPos(startMatch.getRanges(), stack, counters);
 
     while (!stack.empty()) {
-        const BRPosExt node = stack.back();
+        const FMPosExt node = stack.back();
         stack.pop_back();
 
         // update the vector
@@ -935,130 +770,123 @@ void RIndex::recApproxMatchHamming(const Search& s, const BROcc& startMatch,
             // end of part
             if (vec[row] >= minED) {
                 // valid occurrence
-                BROcc match = BROcc(node.getSample(), vec[row],
-                                    startMatch.getDepth() + pSize);
+                FMOcc match =
+                    FMOcc(node.getRanges(), vec[row],
+                          startMatch.getDepth() + pSize, strand, pairStatus);
                 if (s.isEnd(idx)) {
                     // end of search
-                    occ.addIndexOcc(match);
+#ifndef LF_BENCHMARK_FUNCTIONALITY
+                    occ.addFMOcc(match);
+#endif
                 } else {
                     // continue search
                     recApproxMatchHamming(s, match, occ, parts, counters,
                                           idx + 1);
-                    setDirection(s.getDirection(idx));
+                    setDirection(s.getDirection(idx),
+                                 s.isUnidirectionalBackwards(idx));
                 }
             }
             continue;
         }
-        extendBRPos(node, stack, counters);
+        extendFMPos(node, stack, counters);
     }
 }
 
-
-void RIndex::extendBRPos(const BRSample& parentSample,
-                          vector<BRPosExt>& stack, Counters& counters,
-                          length_t row) const {
-
-    // iterate over the entire alphabet
-    for (length_t i = 1; i < sigma.size(); i++) {
-
-        BRSample sampleForNewChar;
-
-        // check if this character occurs in the specified range
-        assert(i < ALPHABET);
-        if ((this->*extraChar)(i, parentSample, sampleForNewChar)) {
-            // push this range and character for the next iteration
-            stack.emplace_back(sigma.i2c(i), sampleForNewChar, row + 1);
-
-            counters.incNodeCounter();
-        }
-    }
-}
-
-void RIndex::extendBRPos(const BRPosExt& pos, vector<BRPosExt>& stack,
-                          Counters& counters) const {
-    extendBRPos(pos.getSample(), stack, counters, pos.getDepth());
+void IndexInterface::recApproxMatchEditEntry(
+    const Search& search, const FMOcc& startMatch, Occurrences& occ,
+    const vector<Substring>& parts, Counters& counters, const int& idx) {
+    counters.inc(Counters::SEARCH_STARTED);
+    recApproxMatchEdit(search, startMatch, occ, parts, counters, idx);
 }
 
 // ----------------------------------------------------------------------------
 // POST-PROCESSING ROUTINES FOR APPROXIMATE PATTERN MATCHING
 // ----------------------------------------------------------------------------
 
-vector<length_t> RIndex::textPositionsFromSample(const BRSample& sample) const {
-    assert(sample.getTextPos() >= sample.getOffset());
+vector<TextOcc> IndexInterface::getTextOccHamming(Occurrences& occ,
+                                                  Counters& counters) const {
+    counters.inc(Counters::TOTAL_REPORTED_POSITIONS, occ.textOccSize());
 
-    vector<length_t> textPositions;
-    textPositions.reserve(sample.getRanges().width());
+    // erase in-index doubles
+    occ.eraseDoublesFM();
 
-    if (!sample.isValid()) {
-        return textPositions;
-    }
+    // Get the in-index occurrences
+    const auto& fmOccs = occ.getFMOccurrences();
 
-    length_t startPos = sample.getTextPos() - sample.getOffset();
-    length_t currentPos = startPos;
+    // The size of the match
+    length_t size = (fmOccs.empty()) ? 0 : fmOccs[0].getDepth();
 
-    textPositions.push_back(currentPos);
+    std::string CIGAR = "*"; // default CIGAR string
 
-    while (plcp[currentPos] >= sample.getLength()) {
-        currentPos = phi(currentPos);
-        textPositions.push_back(currentPos);
-    }
+    for (const auto& fmOcc : fmOccs) {
+        // Get the range
+        const SARange& saRange = fmOcc.getRanges().getRangeSA();
+        counters.inc(Counters::TOTAL_REPORTED_POSITIONS, saRange.width());
 
-    currentPos = startPos;
-    while (true) {
-        if (currentPos == getInitialToehold()) break;
-        currentPos = phiInverse(currentPos);
-        if (plcp[currentPos] < sample.getLength()) break;
-        textPositions.push_back(currentPos);
-    }
-    return textPositions;
-}
+        auto fmStrand = fmOcc.getStrand();
+        auto fmPairStatus = fmOcc.getPairStatus();
 
-vector<TextOcc> RIndex::convertToMatchesInText(const BROcc& saMatch) const {
+        // find the positions in the text for this index-occurrence
+        std::vector<length_t> textPositions;
+        getTextPositionsFromSARange(fmOcc.getRanges(), textPositions);
 
-    vector<TextOcc> textMatches;
-    textMatches.reserve(saMatch.getRanges().width());
-
-    vector<length_t> textPositions = textPositionsFromSample(saMatch.getSample());
-
-    for (length_t pos: textPositions) {
-
-        length_t startPos = pos + saMatch.getShift();
-
-        length_t endPos = startPos + saMatch.getDepth();
-
-        textMatches.emplace_back(Range(startPos, endPos),
-                                 saMatch.getDistance());
-    }
-    return textMatches;
-}
-
-vector<TextOcc> RIndex::getUniqueTextOccurrences(BROccurrences& occ,
-                                                       const length_t& maxED,
-                                                       Counters& counters) {
-
-    // increment reporte position counter
-    counters.totalReportedPositions += occ.textOccSize();
-
-    // erase equal occurrences from the in-index occurrences
-    occ.eraseDoublesIndex();
-
-    // convert the in-index occurrences to in-text occurrences
-    const vector<BROcc>& broccs = occ.getIndexOccurrences();
-    for (const BROcc& brocc : broccs) {
-
-        Range saRange(brocc.getSample().getRanges().getRangeSA().getBeginPos().posIndex,
-                      brocc.getSample().getRanges().getRangeSA().getEndPos().posIndex + 1);
-
-        // increment reported positions counter
-        counters.totalReportedPositions += saRange.width();
-
-        vector<TextOcc> textoccs = convertToMatchesInText(brocc);
-
-        for (TextOcc textocc: textoccs) {
-            occ.addTextOcc(textocc);
+        // add the text occurrences
+        for (length_t p : textPositions) {
+            occ.addTextOcc(Range(p, p + size), fmOcc.getDistance(), CIGAR,
+                           fmStrand, fmPairStatus);
         }
     }
-    // erase equal occurrences from the in-text occurrences
+    // remove doubles
+    occ.eraseDoublesText();
+
+    return occ.getTextOccurrences();
+}
+
+vector<TextOcc> IndexInterface::getUniqueTextOccurrences(
+    Occurrences& occ, const length_t& maxED, Counters& counters,
+    const ReadBundle& bundle) const {
+
+    // TODO: add sorted requirement to doc
+    // TODO: add assertion at the end that checks if it was sorted
+
+    // increment report position counter
+    counters.inc(Counters::TOTAL_REPORTED_POSITIONS, occ.textOccSize());
+
+    // erase equal occurrences from the in-index occurrences
+    occ.eraseDoublesFM();
+
+    // convert the in-index occurrences to in-text occurrences
+    const auto& fmOccs = occ.getFMOccurrences();
+    for (const auto& f : fmOccs) {
+
+        const SARange& saRange = f.getRanges().getRangeSA();
+
+        // increment reported positions counter
+        counters.inc(Counters::TOTAL_REPORTED_POSITIONS, saRange.width());
+
+        std::string CIGARstring = "*";
+        auto depth = f.getDepth(), distance = f.getDistance();
+        length_t shift = f.getShift();
+
+        // find the positions in the text for this index-occurrence
+        std::vector<length_t> textPositions;
+        getTextPositionsFromSARange(f.getRanges(), textPositions);
+
+        // add the text occurrences
+        for (length_t p : textPositions) {
+            length_t startPos = p + shift;
+            assert(startPos < textLength);
+
+            // convert to a text occurrence
+            TextOcc tOcc = TextOcc(Range(startPos, startPos + depth), distance,
+                                   f.getStrand(), f.getPairStatus());
+            occ.addTextOcc(tOcc);
+        }
+    }
+
+    // erase equal occurrences from the in-text occurrences, note
+    // that an in-text occurrence with calculated CIGAR string takes
+    // preference over an equal one without CIGAR string
     occ.eraseDoublesText();
 
     // find the non-redundant occurrences
@@ -1070,8 +898,8 @@ vector<TextOcc> RIndex::getUniqueTextOccurrences(BROccurrences& occ,
     length_t prevDepth = numeric_limits<length_t>::max();
     length_t prevED = maxED + 1;
 
-    const auto& textocc = occ.getTextOccurrences();
-    for (const auto& o : textocc) {
+    const auto& textOcc = occ.getTextOccurrences();
+    for (const auto& o : textOcc) {
         // find the difference between this and the previous
         // occurrence
         auto diff = abs_diff<length_t>(o.getRange().getBegin(), prevBegin);
@@ -1100,6 +928,9 @@ vector<TextOcc> RIndex::getUniqueTextOccurrences(BROccurrences& occ,
 
         nonRedundantOcc.emplace_back(o);
     }
+
+    // assert that nonRedundantOcc is sorted
+    assert(is_sorted(nonRedundantOcc.begin(), nonRedundantOcc.end()));
 
     return nonRedundantOcc;
 }

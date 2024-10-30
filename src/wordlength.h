@@ -23,13 +23,8 @@
 #include <cstdint>
 #include <cstdint>
 
-#if THIRTY_TWO
-    #define LENGTH_TYPE_NAME "32-bits"
-    typedef uint32_t length_t;
-#else
-    #define LENGTH_TYPE_NAME "64-bits"
-    typedef uint64_t length_t;
-#endif
+#define LENGTH_TYPE_NAME "64-bits"
+typedef uint64_t length_t;
 
 #define BMOVE_BUILD_INDEX_TAG 2    // the tag for building the index
 

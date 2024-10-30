@@ -25,7 +25,6 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <cstdint>
 
 // ============================================================================
 // DEFINITIONS
@@ -285,7 +284,7 @@ template <size_t numBytes> class TKmer {
 
     /**
      * Write a kmer to file
-     * @param ofs Openen output file stream
+     * @param ofs Opened output file stream
      */
     void write(std::ofstream& ofs) const {
         ofs.write((char*)buf, kMSB + 1);
@@ -293,7 +292,7 @@ template <size_t numBytes> class TKmer {
 
     /**
      * Write a kmer to file
-     * @param ofs Openen output file stream
+     * @param ofs Opened output file stream
      */
     void writeBytes() const {
         for (int i = 0; i < numBytes; i++)

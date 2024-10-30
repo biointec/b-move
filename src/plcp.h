@@ -1,16 +1,48 @@
-/*
- * This is a modified version of the permuted_lcp class
- * originally implemented by Yuma Arakawa.
- * Source: https://github.com/U-Ar/br-index
- */
+/******************************************************************************
+ *  b-move: bidirectional move structure                                      *
+ *  Copyright (C) 2020-2024 - Lore Depuydt <lore.depuydt@ugent.be> and        *
+ *                            Luca Renders <luca.renders@ugent.be> and        *
+ *                            Jan Fostier <jan.fostier@ugent.be>              *
+ *                                                                            *
+ *  This program is free software: you can redistribute it and/or modify      *
+ *  it under the terms of the GNU Affero General Public License as            *
+ *  published by the Free Software Foundation, either version 3 of the        *
+ *  License, or (at your option) any later version.                           *
+ *                                                                            *
+ *  This program is distributed in the hope that it will be useful,           *
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of            *
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the             *
+ *  GNU Affero General Public License for more details.                       *
+ *                                                                            *
+ * You should have received a copy of the GNU Affero General Public License   *
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
+ ******************************************************************************/
 
-//============================================================================
+/******************************************************************************
+ *  This file includes code inspired by the full-br-index repository          *
+ *  Original source: https://github.com/U-Ar/full-br-index                    *
+ *  Author: Yuma Arakawa                                                      *
+ *                                                                            *
+ *  This program is free software: you can redistribute it and/or modify      *
+ *  it under the terms of the GNU Affero General Public License as            *
+ *  published by the Free Software Foundation, either version 3 of the        *
+ *  License, or (at your option) any later version.                           *
+ *                                                                            *
+ *  This program is distributed in the hope that it will be useful,           *
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of            *
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the              *
+ *  GNU Affero General Public License for more details.                       *
+ *                                                                            *
+ *  You should have received a copy of the GNU Affero General Public License  *
+ *  along with this program. If not, see <https://www.gnu.org/licenses/>.     *
+ ******************************************************************************/
 
 
 #ifndef PLCP_H
 #define PLCP_H
 
-#include "wordlength.h"
+#include "definitions.h"
+#include "logger.h"
 #include "sparseBitvec.h"
 
 #include <fstream>  // used for reading in files

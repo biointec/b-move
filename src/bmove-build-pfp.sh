@@ -11,9 +11,15 @@ start_time=$(date +%s)
 bmove_build_exe="./bmove-build"
 big_bwt_exe="./../external/Big-BWT/bigbwt"
 
+# Default seed length
+seedLength=100
+
 # Function to show usage
 showUsage() {
-    echo "Usage: $0 <input_file>"
+    echo "Usage: $0 [-l <seedLength>] <input_file>"
+    echo
+    echo "Optional arguments:"
+    echo "  -l <seedLength>  Seed length for replacing non-ACGT characters (default: $seedLength). 0 means that no seed is used."
 }
 
 # Function to check if a file has a valid FASTA extension
@@ -45,6 +51,26 @@ runCommandWithTime() {
 
 # Function to parse command-line options
 parseOptions() {
+    # Parse command-line options
+    while getopts ":l:" opt; do
+        case $opt in
+            l)
+                seedLength=$OPTARG
+                ;;
+            \?)
+                echo "Invalid option: -$OPTARG" >&2
+                showUsage
+                exit 1
+                ;;
+            :)
+                echo "Option -$OPTARG requires an argument." >&2
+                showUsage
+                exit 1
+                ;;
+        esac
+    done
+    # Shift off the options and optional --
+    shift $((OPTIND-1))
 
     # Check if input file is provided
     if [ $# -ne 1 ]; then
@@ -63,6 +89,7 @@ parseOptions "$@"
 echo "Welcome to the b-move build process with prefix-free parsing!"
 echo "-------------------------------------------------------------"
 echo "Input file: $input_file"
+echo "Seed length: $seedLength"
 echo "-------------------------------------------------------------"
 
 # Check if the input file is a FASTA file
@@ -73,7 +100,7 @@ fi
 
 # Start the preprocessing
 echo "Start preprocessing the fasta file with b-move..."
-runCommandWithTime "$bmove_build_exe" --preprocess "$input_file"
+runCommandWithTime "$bmove_build_exe" --preprocess -l "$seedLength" "$input_file"
 echo "Preprocessing done!"
 echo "-------------------------------------------------------------"
 

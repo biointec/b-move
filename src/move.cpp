@@ -17,53 +17,196 @@
  * You should have received a copy of the GNU Affero General Public License   *
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
  ******************************************************************************/
-#include "move.h"
-#include "moveElement.h"
-#include "rindexhelpers.h"
-#include "wordlength.h"
 
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
+#include "move.h"
+#include "definitions.h"
+#include "rindexhelpers.h"
+#include "logger.h"
+#include "moveElement.h"
+
+#include <cassert>
+#include <cstdint>
+#include <istream>
+#include <sys/types.h>
+
+using namespace std;
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
 length_t LF_call_count = 0;
 length_t elapsed_LF = 0;
 #endif
 
-using namespace std;
+// ----------------------------------------------------------------------------
+//  MoveLFRepr
+// ----------------------------------------------------------------------------
 
-template <size_t S>
-void
-Move<S>::leftExtension(const PositionRange& inputRange, PositionRange& newRange,
-                               const length_t c,
-                               const bool onlyPosIndex) const {
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
+void MoveLFRepr::getRunIndex(const length_t position, length_t& runIndex,
+                           pair<length_t, length_t>& possibleRange) const {
+    // Iteratively narrow down the possible range using binary search.
+    while (possibleRange.second > possibleRange.first) {
+        // Use the middle of the possible range as a test value.
+        length_t testIndex =
+            (possibleRange.first + possibleRange.second + 1) / 2;
+
+        // Eliminate half of the possible range based on the comparison.
+        if (this->rows[testIndex].inputStartPos <= position) {
+            possibleRange.first = testIndex;
+        } else {
+            possibleRange.second = testIndex - 1;
+        }
+    }
+
+    runIndex = possibleRange.first;
+
+    assert(position >= rows[possibleRange.first].inputStartPos);
+    assert(possibleRange.first == nrOfRuns - 1 ||
+           position < rows[possibleRange.first + 1].inputStartPos);
+}
+
+void MoveLFRepr::computeRunIndices(MoveRange& range) const {
+    length_t begin = range.getBegin();
+    length_t end = range.getEnd() - 1;
+    length_t beginRun = range.getBeginRun();
+    length_t endRun = range.getEndRun();
+    pair<length_t, length_t> possibleRange(beginRun, endRun);
+
+    getRunIndex(begin, beginRun, possibleRange);
+    range.setBeginRun(beginRun);
+    possibleRange.second = endRun;
+    getRunIndex(end, endRun, possibleRange);
+    range.setEndRun(endRun);
+    range.setRunIndicesValid(true);
+}
+
+bool MoveLFRepr::walkToNextRun(const MoveRange& startRange, length_t& nextPos,
+                             length_t& nextRun, const length_t c) const {
+    nextPos = startRange.getBegin();
+    nextRun = startRange.getBeginRun();
+
+    length_t endRun = startRange.getEndRun();
+
+    // Iterate through the runs to find the next run containing character c
+    while (rows[nextRun].c != c && nextRun <= endRun) {
+        nextRun++;
+        nextPos = rows[nextRun].inputStartPos;
+    }
+
+    // Return true if a run containing character c was found
+    return nextRun <= endRun;
+}
+
+void MoveLFRepr::walkToPreviousRun(const MoveRange& startRange,
+                                 length_t& previousPos, length_t& previousRun,
+                                 const length_t c) const {
+    previousPos = startRange.getEnd() - 1;
+    previousRun = startRange.getEndRun();
+
+    // Iterate backwards through the runs to find the previous run containing
+    // character c
+    while (rows[previousRun].c != c) {
+        previousPos = rows[previousRun].inputStartPos - 1;
+        previousRun--;
+    }
+}
+
+void MoveLFRepr::fastForward(const length_t& positionIndex,
+                           length_t& runIndex) const {
+    // Fast forward the runIndex until it contains
+    // the run that contains the positionIndex.
+    while (rows[runIndex].inputStartPos <= positionIndex) {
+        runIndex++;
+        // Ensure runIndex stays within bounds
+        assert(runIndex < nrOfRuns + 1);
+    }
+    runIndex--;
+}
+
+void MoveLFRepr::findLF(length_t& positionIndex, length_t& runIndex) const {
+    const auto& row = rows[runIndex];
+    length_t offset = positionIndex - row.inputStartPos;
+    positionIndex = row.outputStartPos + offset;
+    runIndex = row.outputStartRun;
+    // Fast forward to the correct runIndex after LF operation
+    fastForward(positionIndex, runIndex);
+}
+
+void MoveLFRepr::findLFWithoutFastForward(length_t& positionIndex,
+                                        const length_t& runIndex) const {
+    const auto& row = rows[runIndex];
+    length_t offset = positionIndex - row.inputStartPos;
+    positionIndex = row.outputStartPos + offset;
+}
+
+void MoveLFRepr::addChar(const SARange& parentRange, SARange& childRange,
+                       const length_t& c) const {
+#ifdef LF_BENCHMARK_FUNCTIONALITY
     // Start timing with rdtscp
     unsigned int start_aux;
     uint64_t start = __builtin_ia32_rdtscp(&start_aux);
 #endif
 
-    // Select the first occurence of cP (run index) in the input range.
-    Position lfStartPos;
-    if (!getNextOccurence(inputRange, lfStartPos, c)) {
-        newRange = PositionRange::getEmptyPositionRange();
+    length_t nextPos;
+    length_t nextRun;
+    if (!walkToNextRun(parentRange, nextPos, nextRun, c)) {
+        childRange.setEmpty();
         return;
     }
 
-    // Select the last occurence of cP (run index) in the input range.
-    Position lfEndPos;
-    getPreviousOccurence(inputRange, lfEndPos, c);
+    length_t previousPos;
+    length_t previousRun;
+    walkToPreviousRun(parentRange, previousPos, previousRun, c);
 
+    findLF(nextPos, nextRun);
+    findLF(previousPos, previousRun);
 
-    // Perform LF and return
-    lf(lfStartPos, newRange.getBeginPosMutable(), onlyPosIndex);
-    lf(lfEndPos, newRange.getEndPosMutable(), onlyPosIndex);
+    childRange = SARange(nextPos, previousPos + 1, nextRun, previousRun);
 
-#ifdef ENABLE_BENCHMARK_FUNCTIONALITY
+#ifdef LF_BENCHMARK_FUNCTIONALITY
     // End timing with rdtscp
     unsigned int end_aux;
     uint64_t end = __builtin_ia32_rdtscp(&end_aux);
 
     // Check if the core has switched
     if (start_aux != end_aux) {
-        cerr << "Core switch detected in leftExtension after " << LF_call_count
+        cerr << "Core switch detected in character extension after " << LF_call_count
+             << " calls" << endl;
+
+    } else {
+
+        elapsed_LF += end - start;
+        LF_call_count++;
+    }
+#endif
+}
+
+length_t MoveLFRepr::countChar(const SARange& parentRange,
+                             const length_t& c) const {
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // Start timing with rdtscp
+    unsigned int start_aux;
+    uint64_t start = __builtin_ia32_rdtscp(&start_aux);
+#endif
+    length_t nextPos;
+    length_t nextRun;
+    if (!walkToNextRun(parentRange, nextPos, nextRun, c)) {
+        return 0;
+    }
+
+    length_t previousPos;
+    length_t previousRun;
+    walkToPreviousRun(parentRange, previousPos, previousRun, c);
+
+    findLFWithoutFastForward(nextPos, nextRun);
+    findLFWithoutFastForward(previousPos, previousRun);
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // End timing with rdtscp
+    unsigned int end_aux;
+    uint64_t end = __builtin_ia32_rdtscp(&end_aux);
+
+    // Check if the core has switched
+    if (start_aux != end_aux) {
+        cerr << "Core switch detected in character extension after " << LF_call_count
              << " calls" << endl;
 
     } else {
@@ -73,185 +216,31 @@ Move<S>::leftExtension(const PositionRange& inputRange, PositionRange& newRange,
     }
 #endif
 
-    return;
+    return previousPos + 1 - nextPos;
 }
 
-template <size_t S>
-bool Move<S>::getPreviousOccurence(
-    const PositionRange& startPosition, Position& result,
-    const length_t c) const {
-    result = startPosition.getEndPos();
+length_t MoveLFRepr::getCumulativeCounts(const SARange& range,
+                                       length_t positionInAlphabet) const {
 
-    while (!runHeadEquals(result.runIndex, c) &&
-           result.runIndex >= startPosition.getBeginPos().runIndex) {
-        result.runIndex--;
-        result.posIndex = mappings[result.runIndex + 1].inputStart - 1;
+    assert(positionInAlphabet < ALPHABET);
+    assert(positionInAlphabet > 0);
+
+    length_t cumulativeCount = 0;
+    // zero character, check inputRange to zeroCharPos
+    if (range.getBegin() <= zeroCharPos && range.getEnd() > zeroCharPos) {
+        // range contains the zeroCharPos
+        cumulativeCount++;
     }
 
-    return true;
-}
-
-template <size_t S>
-bool Move<S>::getNextOccurence(const PositionRange& startPosition,
-                                       Position& result,
-                                       const length_t c) const {
-    result = startPosition.getBeginPos();
-
-    while (!runHeadEquals(result.runIndex, c) &&
-           result.runIndex <= startPosition.getEndPos().runIndex) {
-        result.runIndex++;
-        result.posIndex = mappings[result.runIndex].inputStart;
+    for (length_t c = 1; c < positionInAlphabet; c++) {
+        cumulativeCount += countChar(range, c);
     }
 
-    if (result.runIndex > startPosition.getEndPos().runIndex) {
-        return false;
-    }
-
-    return true;
+    return cumulativeCount;
 }
 
-template <size_t S>
-void Move<S>::lf(const Position& input, Position& output,
-                 const bool onlyPosIndex) const {
-    // Get the output position index by using mappings and adding the offset
-    // from the input position to the start of its run.
-    MoveElement lfElement = this->mappings[input.runIndex];
-    output.posIndex =
-        lfElement.outputStart + (input.posIndex - lfElement.inputStart);
-
-    if (onlyPosIndex)
-        return;
-
-    // Find the corresponding input run by linear search, starting from the
-    // first input interval overlapping the output interval.
-    length_t b = lfElement.mappingIndex;
-    while (this->mappings[b].inputStart <= output.posIndex) {
-        b++;
-    }
-
-    output.runIndex = b - 1;
-
-    assert(output.posIndex >= mappings[output.runIndex].inputStart);
-    assert(output.runIndex == runsSize - 1 ||
-           output.posIndex < mappings[output.runIndex + 1].inputStart);
-
-    return;
-}
-
-template <size_t S>
-length_t Move<S>::getCharCountInRange(const PositionRange& range, const length_t c) const {
-    
-    if (c == 0) {
-        // zero character, check inputRange to zeroCharPos
-        if (range.getBeginPos().posIndex > zeroCharPos || range.getEndPos().posIndex < zeroCharPos) {
-            // zero char does not occure in input range, return empty range
-            return 0;
-        }
-        return 1;
-    }
-
-    PositionRange charRange;
-    leftExtension(range, charRange, c, true);
-
-    return charRange.width();
-
-}
-
-
-template <size_t S>
-length_t Move<S>::getSmallerCharsCountInRange(const PositionRange& range, const length_t c) const {
-    length_t count = 0;
-    for (length_t smallerC = 0; smallerC < c; smallerC ++) {
-        count += getCharCountInRange(range, smallerC);
-    }
-
-    return count;
-}
-
-
-template <size_t S>
-PositionRange Move<S>::fullRange() const {
-    // Create the start position (pos and run 0)
-    Position start(0, 0);
-
-    // Create the end position (last bwtIndex and last run)
-    Position end(this->bwtSize - 1, runsSize - 1);
-
-    // Return the full range
-    return PositionRange(start, end);
-}
-
-
-template <size_t S>
-void Move<S>::getRunIndex(Position& position, pair<length_t,length_t> possibleRange) const {
-    // Iteratively make the posible range smaller by binary search, untill only 1 interval remains.
-    while (possibleRange.second-possibleRange.first >= 1) {
-        // Use the middle of the possible range as a test value.
-        length_t testIndex = ((possibleRange.second+possibleRange.first + 1) / 2);
-
-        // Eliminate half of the possible range by comparing the value to the test value.
-        if (this->mappings[testIndex].inputStart <= position.posIndex) {
-            possibleRange.first = testIndex;
-        } else {
-            possibleRange.second = testIndex-1;
-        }
-    }
-
-    position.runIndex = possibleRange.first;
-
-    assert(position.posIndex >= mappings[possibleRange.first].inputStart);
-    assert(possibleRange.first == runsSize-1 || position.posIndex < mappings[possibleRange.first+1].inputStart);
-
-    return;
-}
-
-
-template <size_t S>
-PositionRange Move<S>::computeRunIndices(const PositionRange& positionRange) const {
-    pair<length_t, length_t> possibleRange(positionRange.getBeginPos().runIndex, positionRange.getEndPos().runIndex);
-    
-    Position beginPos = positionRange.getBeginPos();
-    Position endPos = positionRange.getEndPos();
-    
-    getRunIndex(beginPos, possibleRange);
-    getRunIndex(endPos, possibleRange);
-    
-    return PositionRange(beginPos, endPos);
-}
-
-
-template <size_t S>
-size_t Move<S>::printMemSize(ofstream& out) {
-
-    size_t totalSize = sizeof(bwtSize);
-
-    cout << endl << "Sizes in Move structure:" << endl;
-
-    size_t mappingsSize = runsSize * sizeof(MoveElement);
-    cout << "Mappings: " << mappingsSize << "\n";
-    totalSize += mappingsSize;
-
-    totalSize += sizeof(zeroCharRun) + sizeof(zeroCharPos);
-
-    cout << "Total Move size:" << totalSize << endl << endl;
-
-    return totalSize;
-}
-
-
-template <size_t S>
-void Move<S>::printData() {
-    // Print the contents of mappings (loop through mappings)
-    cout << "Mappings:" << endl;
-    for (length_t i = 0; i < runsSize; i ++) {
-        cout << i << ": (" << this->mappings[i].inputStart << ", " << this->mappings[i].outputStart << ") Index output interval is " << this->mappings[i].mappingIndex << endl;
-    }
-
-    cout << endl;
-}
-
-template <size_t S> bool Move<S>::load(const string& baseFile, bool verbose) {
-    string fileName = baseFile + ".move";
+bool MoveLFRepr::load(const string& baseFile) {
+    string fileName = baseFile + ".LFFull";
 
     ifstream ifs(fileName, ios::binary);
     if (!ifs) {
@@ -260,17 +249,392 @@ template <size_t S> bool Move<S>::load(const string& baseFile, bool verbose) {
 
     // Load the bwtSize, amount of input intervals and the alphabet size.
     ifs.read((char*)&bwtSize, sizeof(bwtSize));
-    ifs.read((char*)&runsSize, sizeof(runsSize));
+    ifs.read((char*)&nrOfRuns, sizeof(nrOfRuns));
     ifs.read((char*)&zeroCharPos, sizeof(zeroCharPos));
 
     // Load rows: allocate memory and read.
-    mappings.reserve(runsSize + 1);
-    for (length_t i = 0; i < runsSize + 1; i++) {
-        mappings[i].load(ifs);
+    rows.reserve(nrOfRuns + 1);
+    for (length_t i = 0; i < nrOfRuns + 1; i++) {
+        rows[i] = MoveRowLF(ifs);
     }
 
     ifs.close();
     return true;
 }
 
-template class Move<ALPHABET>;
+// ----------------------------------------------------------------------------
+//  MoveLFReprBP
+// ----------------------------------------------------------------------------
+
+// Stub default constructor (does nothing)
+MoveLFReprBP::MoveLFReprBP()
+    : nrOfRuns(0), textSize(0), bitsForC(0), bitsForN(0), bitsForR(0),
+      totalBits(0), totalBytes(0) {
+    // No initialization done here
+}
+
+bool MoveLFReprBP::initialize(length_t nrOfRuns, length_t textSize) {
+    this->nrOfRuns = nrOfRuns;
+    this->textSize = textSize;
+
+    // Calculate the number of bits required for n and r
+    bitsForC = static_cast<uint8_t>(std::ceil(std::log2(ALPHABET)));
+    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
+    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+
+    logger.logInfo("\tInitializing MoveLFReprBP with " +
+                   std::to_string(nrOfRuns) + " runs and text size " +
+                   std::to_string(textSize) + "...");
+
+    // Calculate total bits for each row and convert to bytes
+    totalBits = bitsForC + 2 * bitsForN +
+                bitsForR; // One char, two n values and one r value
+    totalBytes =
+        (totalBits + 7) / 8; // Convert total bits to bytes (rounded up)
+
+    logger.logInfo("\tBits for c: " + std::to_string(bitsForC));
+    logger.logInfo("\tBits for n: " + std::to_string(bitsForN));
+    logger.logInfo("\tBits for r: " + std::to_string(bitsForR));
+    logger.logInfo("\tTotal bits per row: " + std::to_string(totalBits));
+    logger.logInfo("\tTotal bytes per row: " + std::to_string(totalBytes));
+
+    // Manually allocate buffer memory
+    buffer = new uint8_t[totalBytes * (nrOfRuns + 1)]();
+
+    return true;
+}
+
+bool MoveLFReprBP::load(const std::string& baseFile) {
+    string fileName = baseFile + ".LFBP";
+    std::ifstream ifs(fileName, std::ios::binary);
+    if (!ifs) {
+        return false; // File could not be opened
+    }
+
+    // Load the textSize and nrOfRuns from the file
+    ifs.read(reinterpret_cast<char*>(&textSize), sizeof(textSize));
+    ifs.read(reinterpret_cast<char*>(&nrOfRuns), sizeof(nrOfRuns));
+    ifs.read((char*)&zeroCharPos, sizeof(zeroCharPos));
+
+    // Now calculate the number of bits required for n and r
+    bitsForN = static_cast<uint8_t>(std::ceil(std::log2(textSize)));
+    bitsForR = static_cast<uint8_t>(std::ceil(std::log2(nrOfRuns)));
+    bitsForC = static_cast<uint8_t>(std::ceil(std::log2(ALPHABET)));
+
+    // Calculate total bits for each row and convert to bytes
+    totalBits =
+        bitsForC + 2 * bitsForN + bitsForR; // Two n values and one r value
+    totalBytes =
+        (totalBits + 7) / 8; // Convert total bits to bytes (rounded up)
+
+    // Manually allocate buffer memory
+    buffer = new uint8_t[totalBytes * (nrOfRuns + 1)]();
+
+    // Load the packed rows into the buffer
+    ifs.read(reinterpret_cast<char*>(buffer), totalBytes * (nrOfRuns + 1));
+
+    // Ensure the file was properly read
+    if (!ifs) {
+        return false; // Read failed
+    }
+
+    ifs.close();
+    return true;
+}
+
+bool MoveLFReprBP::write(const std::string& fileName) const {
+    std::ofstream ofs(fileName, std::ios::binary);
+    if (!ofs) {
+        return false; // File could not be opened for writing
+    }
+
+    // Write the textSize and nrOfRuns to the file
+    ofs.write(reinterpret_cast<const char*>(&textSize), sizeof(textSize));
+    ofs.write(reinterpret_cast<const char*>(&nrOfRuns), sizeof(nrOfRuns));
+    ofs.write(reinterpret_cast<const char*>(&zeroCharPos), sizeof(zeroCharPos));
+
+    // Write the buffer (packed rows) to the file
+    ofs.write(reinterpret_cast<const char*>(buffer),
+              totalBytes * (nrOfRuns + 1));
+
+    // Ensure the file was properly written
+    if (!ofs) {
+        return false; // Write failed
+    }
+
+    ofs.close();
+    return true;
+}
+
+MoveLFReprBP::~MoveLFReprBP() {
+    delete[] buffer; // Deallocate buffer memory
+}
+
+void MoveLFReprBP::setRowValues(length_t rowIndex, uint8_t runChar,
+                                length_t inputStartPos, length_t outputStartPos,
+                                length_t outputStartRun) {
+    setRowValue(rowIndex, runChar, 0, bitsForC); // Pack runChar at bit offset 0
+    setRowValue(rowIndex, inputStartPos, bitsForC,
+                bitsForN); // Pack inputStartPos at bit offset 0
+    setRowValue(rowIndex, outputStartPos, bitsForC + bitsForN,
+                bitsForN); // Pack outputStartPos at bit offset bitsForN
+    setRowValue(rowIndex, outputStartRun, bitsForC + 2 * bitsForN,
+                bitsForR); // Pack outputStartRun at bit offset 2 * bitsForN
+}
+
+length_t MoveLFReprBP::getRowValue(length_t rowIndex, uint16_t bitOffset,
+                                   uint8_t numBits) const {
+    length_t mask = (1ULL << numBits) - 1;
+    length_t byteIndex = rowIndex * totalBytes + (bitOffset / 8);
+    uint8_t bitIndex = bitOffset % 8;
+
+    const __uint128_t* block =
+        reinterpret_cast<const __uint128_t*>(&buffer[byteIndex]);
+    __uint128_t currentValue = *block;
+
+    return (currentValue >> bitIndex) & mask;
+}
+
+uint8_t MoveLFReprBP::getRunHead(length_t runIndex) const {
+    assert(runIndex < nrOfRuns + 1); // Ensure the index is within bounds
+    return getRowValue(runIndex, 0,
+                       bitsForC); // Use getRowValue to get the run head
+}
+
+length_t MoveLFReprBP::getInputStartPos(length_t i) const {
+    assert(i < nrOfRuns + 1); // Ensure the index is within bounds
+    return getRowValue(i, bitsForC,
+                       bitsForN); // Use getRowValue to get the inputStartPos
+}
+
+length_t MoveLFReprBP::getOutputStartPos(length_t i) const {
+    assert(i < nrOfRuns + 1); // Ensure the index is within bounds
+    return getRowValue(i, bitsForC + bitsForN,
+                       bitsForN); // Use getRowValue to get the outputStartPos
+}
+
+length_t MoveLFReprBP::getOutputStartRun(length_t i) const {
+    assert(i < nrOfRuns + 1); // Ensure the index is within bounds
+    return getRowValue(i, bitsForC + 2 * bitsForN,
+                       bitsForR); // Use getRowValue to get the outputStartRun
+}
+
+void MoveLFReprBP::setRowValue(length_t rowIndex, length_t value,
+                               uint16_t bitOffset, uint8_t numBits) {
+    length_t mask = (1ULL << numBits) - 1;
+    value &= mask; // Ensure value fits in the specified number of bits
+
+    length_t byteIndex = rowIndex * totalBytes + (bitOffset / 8);
+    uint8_t bitIndex = bitOffset % 8;
+
+    __uint128_t* block = reinterpret_cast<__uint128_t*>(&buffer[byteIndex]);
+    __uint128_t currentValue = *block;
+
+    __uint128_t clearMask = ~(__uint128_t(mask) << bitIndex);
+    currentValue &= clearMask;
+    currentValue |= (__uint128_t(value) << bitIndex);
+    *block = currentValue;
+}
+
+void MoveLFReprBP::setOutputStartRun(length_t rowIndex, length_t value) {
+    assert(rowIndex < nrOfRuns); // Ensure the index is within bounds
+    setRowValue(rowIndex, value, bitsForC + 2 * bitsForN,
+                bitsForR); // Pack value into the correct bit offset
+}
+
+void MoveLFReprBP::getRunIndex(const length_t position, length_t& runIndex,
+                               pair<length_t, length_t>& possibleRange) const {
+    // Iteratively narrow down the possible range using binary search.
+    while (possibleRange.second > possibleRange.first) {
+        // Use the middle of the possible range as a test value.
+        length_t testIndex =
+            (possibleRange.first + possibleRange.second + 1) / 2;
+
+        // Eliminate half of the possible range based on the comparison.
+        if (getInputStartPos(testIndex) <= position) {
+            possibleRange.first = testIndex;
+        } else {
+            possibleRange.second = testIndex - 1;
+        }
+    }
+
+    runIndex = possibleRange.first;
+
+    assert(position >= getInputStartPos(possibleRange.first));
+    assert(possibleRange.first == nrOfRuns - 1 ||
+           position < getInputStartPos(possibleRange.first + 1));
+}
+
+void MoveLFReprBP::computeRunIndices(MoveRange& range) const {
+    length_t begin = range.getBegin();
+    length_t end = range.getEnd() - 1;
+    length_t beginRun = range.getBeginRun();
+    length_t endRun = range.getEndRun();
+    pair<length_t, length_t> possibleRange(beginRun, endRun);
+
+    getRunIndex(begin, beginRun, possibleRange);
+    range.setBeginRun(beginRun);
+    possibleRange.second = endRun;
+    getRunIndex(end, endRun, possibleRange);
+    range.setEndRun(endRun);
+    range.setRunIndicesValid(true);
+}
+
+bool MoveLFReprBP::walkToNextRun(const MoveRange& startRange, length_t& nextPos,
+                                 length_t& nextRun, const length_t c) const {
+    nextPos = startRange.getBegin();
+    nextRun = startRange.getBeginRun();
+
+    length_t endRun = startRange.getEndRun();
+
+    // Iterate through the runs to find the next run containing character c
+    while (getRunHead(nextRun) != c && nextRun <= endRun) {
+        nextRun++;
+        nextPos = getInputStartPos(nextRun);
+    }
+
+    // Return true if a run containing character c was found
+    return nextRun <= endRun;
+}
+
+void MoveLFReprBP::walkToPreviousRun(const MoveRange& startRange,
+                                     length_t& previousPos,
+                                     length_t& previousRun,
+                                     const length_t c) const {
+    previousPos = startRange.getEnd() - 1;
+    previousRun = startRange.getEndRun();
+
+    // Iterate backwards through the runs to find the previous run containing
+    // character c
+    while (getRunHead(previousRun) != c) {
+        previousPos = getInputStartPos(previousRun) - 1;
+        previousRun--;
+    }
+}
+
+void MoveLFReprBP::fastForward(const length_t& positionIndex,
+                               length_t& runIndex) const {
+    // Fast forward the runIndex until it contains
+    // the run that contains the positionIndex.
+    while (getInputStartPos(runIndex) <= positionIndex) {
+        runIndex++;
+        // Ensure runIndex stays within bounds
+        assert(runIndex < nrOfRuns + 1);
+    }
+    runIndex--;
+}
+
+void MoveLFReprBP::findLF(length_t& positionIndex, length_t& runIndex) const {
+    length_t offset = positionIndex - getInputStartPos(runIndex);
+    positionIndex = getOutputStartPos(runIndex) + offset;
+    runIndex = getOutputStartRun(runIndex);
+    // Fast forward to the correct runIndex after LF operation
+    fastForward(positionIndex, runIndex);
+}
+
+void MoveLFReprBP::findLFWithoutFastForward(length_t& positionIndex,
+                                            const length_t& runIndex) const {
+    length_t offset = positionIndex - getInputStartPos(runIndex);
+    positionIndex = getOutputStartPos(runIndex) + offset;
+}
+
+void MoveLFReprBP::addChar(const SARange& parentRange, SARange& childRange,
+                           const length_t& c) const {
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // Start timing with rdtscp
+    unsigned int start_aux;
+    uint64_t start = __builtin_ia32_rdtscp(&start_aux);
+#endif
+    length_t nextPos;
+    length_t nextRun;
+    if (!walkToNextRun(parentRange, nextPos, nextRun, c)) {
+        childRange.setEmpty();
+        return;
+    }
+
+    length_t previousPos;
+    length_t previousRun;
+    walkToPreviousRun(parentRange, previousPos, previousRun, c);
+
+    findLF(nextPos, nextRun);
+    findLF(previousPos, previousRun);
+
+    childRange = SARange(nextPos, previousPos + 1, nextRun, previousRun);
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // End timing with rdtscp
+    unsigned int end_aux;
+    uint64_t end = __builtin_ia32_rdtscp(&end_aux);
+
+    // Check if the core has switched
+    if (start_aux != end_aux) {
+        cerr << "Core switch detected in character extension after " << LF_call_count
+             << " calls" << endl;
+
+    } else {
+
+        elapsed_LF += end - start;
+        LF_call_count++;
+    }
+#endif
+}
+
+length_t MoveLFReprBP::countChar(const SARange& parentRange,
+                                 const length_t& c) const {
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // Start timing with rdtscp
+    unsigned int start_aux;
+    uint64_t start = __builtin_ia32_rdtscp(&start_aux);
+#endif
+    length_t nextPos;
+    length_t nextRun;
+    if (!walkToNextRun(parentRange, nextPos, nextRun, c)) {
+        return 0;
+    }
+
+    length_t previousPos;
+    length_t previousRun;
+    walkToPreviousRun(parentRange, previousPos, previousRun, c);
+
+    findLFWithoutFastForward(nextPos, nextRun);
+    findLFWithoutFastForward(previousPos, previousRun);
+
+#ifdef LF_BENCHMARK_FUNCTIONALITY
+    // End timing with rdtscp
+    unsigned int end_aux;
+    uint64_t end = __builtin_ia32_rdtscp(&end_aux);
+
+    // Check if the core has switched
+    if (start_aux != end_aux) {
+        cerr << "Core switch detected in character extension after " << LF_call_count
+             << " calls" << endl;
+
+    } else {
+
+        elapsed_LF += end - start;
+        LF_call_count++;
+    }
+#endif
+
+    return previousPos + 1 - nextPos;
+}
+
+length_t MoveLFReprBP::getCumulativeCounts(const SARange& range,
+                                           length_t positionInAlphabet) const {
+
+    assert(positionInAlphabet < ALPHABET);
+    assert(positionInAlphabet > 0);
+
+    length_t cumulativeCount = 0;
+    // zero character, check inputRange to zeroCharPos
+    if (range.getBegin() <= zeroCharPos && range.getEnd() > zeroCharPos) {
+        // range contains the zeroCharPos
+        cumulativeCount++;
+    }
+
+    for (length_t c = 1; c < positionInAlphabet; c++) {
+        cumulativeCount += countChar(range, c);
+    }
+
+    return cumulativeCount;
+}

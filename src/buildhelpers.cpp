@@ -19,90 +19,57 @@
  ******************************************************************************/
 
 #include "buildhelpers.h"
-#include "libsais64.h" // for libsais
-#include <iostream>
+#include "bitvec.h"      // for Bitvec, Bitref
+#include "definitions.h" // for length_t, BMOVE_BUILD_INDEX_TAG...
+#include "libsais64.h"   // for libsais64
+#include "logger.h"      // for Logger, logger
+
+#include <algorithm> // for max, transform, equal, max_element, min_ele...
+#include <array>     // for array
+#include <cctype>    // for toupper
+#include <cstdint>   // for int64_t, uint8_t, uint32_t
+#include <iostream>  // for ifstream, ofstream, operator<<, ios, basic_...
+#include <limits>    // for numeric_limits
+#include <stdexcept> // for runtime_error
+
+using namespace std;
 
 // Random replacement function
 char replaceNonACGT(char original, std::minstd_rand& gen,
-                    length_t& replacementCounter) {
+                    const std::string& seed, size_t& seedIndex) {
     const std::string validChars = "ACGT";
     if (original != 'A' && original != 'C' && original != 'G' &&
         original != 'T') {
-        replacementCounter++;
-        return validChars[gen() % validChars.length()];
+        std::uniform_int_distribution<size_t> distribution(
+            0, validChars.length() - 1);
+        return validChars[distribution(gen)];
     }
     return original;
 }
 
-void processSequence(std::string& concatenation, std::string& sequence,
-                     length_t& minRemovalLength, length_t& startPosition,
-                     std::vector<length_t>& positions,
-                     std::vector<std::string>& seqNames, std::minstd_rand& gen,
-                     length_t& totalNsRemoved, length_t& totalNsReplaced,
-                     length_t& totalOthersReplaced) {
-
-    bool inNRun = false;
-    length_t nRunStart = 0;
-
-    length_t NsRemoved = 0;
-    length_t NsReplaced = 0;
-    length_t othersReplaced = 0;
-
-    length_t charCount = 0;
-    for (char& c : sequence) {
-        if (std::toupper(c) == 'N') {
-            if (!inNRun) {
-                inNRun = true;
-                nRunStart = charCount;
-            }
-        } else {
-            if (inNRun) {
-                if (charCount - nRunStart < minRemovalLength) {
-                    // Replace N with a random ACGT character
-                    for (size_t i = 0; i < charCount - nRunStart; ++i) {
-                        concatenation += replaceNonACGT('N', gen, NsReplaced);
-                    }
-                } else {
-                    NsRemoved += charCount - nRunStart;
-                }
-                inNRun = false;
-            }
-            // Replace non-ACGT characters
-            c = replaceNonACGT(std::toupper(c), gen, othersReplaced);
-            concatenation += c;
-        }
-        charCount++;
+// Seeded replacement function
+char replaceNonACGTWithSeed(char original, std::minstd_rand& gen,
+                            const std::string& seed, size_t& seedIndex) {
+    if (original != 'A' && original != 'C' && original != 'G' &&
+        original != 'T') {
+        char replacement = seed[seedIndex];
+        seedIndex = (seedIndex + 1) %
+                    seed.length(); // Move to the next character in the seed
+        return replacement;
     }
-
-    if (inNRun) {
-        if (charCount - nRunStart < minRemovalLength) {
-            // Replace N with a random ACGT character
-            for (size_t i = 0; i < charCount - nRunStart; ++i) {
-                concatenation += replaceNonACGT('N', gen, NsReplaced);
-            }
-        } else {
-            NsRemoved += charCount - nRunStart;
-        }
-    }
-
-    positions.emplace_back(
-        startPosition); // push back the start position of this sequence
-    startPosition +=
-        sequence.length(); // create start position for next sequence
-    sequence.clear();      // Clear the sequence for the next one
-
-    totalNsRemoved += NsRemoved;
-    totalNsReplaced += NsReplaced;
-    totalOthersReplaced += othersReplaced;
+    seedIndex = 0; // Reset seed index
+    return original;
 }
 
 void concatenateAndTransform(const std::string& fastaFile,
                              std::string& concatenation,
                              std::vector<length_t>& positions,
                              std::vector<std::string>& seqNames,
+                             std::function<char(char, size_t&)> replaceFunc,
                              length_t expectedNumber) {
 
-    std::cout << "Reading FASTA file " + fastaFile << std::endl;
+    logger.logInfo("Reading FASTA file " + fastaFile);
+
     // Open input file and get its size
     std::ifstream inputFile(fastaFile, std::ios::ate);
 
@@ -120,20 +87,14 @@ void concatenateAndTransform(const std::string& fastaFile,
     std::string line;
     length_t startPosition = 0;
 
-    // Seed for random number generation
-    std::minstd_rand gen(42);
+    // Index for seed
+    size_t seedIndex = 0;
 
     // Reserve memory for positions and seqNames vectors
     positions.reserve(expectedNumber);
     seqNames.reserve(expectedNumber);
 
     std::string sequence;
-
-    length_t totalNsRemoved = 0;
-    length_t totalNsReplaced = 0;
-    length_t totalOthersReplaced = 0;
-
-    length_t minRemovalLength = 4;
 
     while (std::getline(inputFile, line)) {
         if (line.empty())
@@ -142,10 +103,19 @@ void concatenateAndTransform(const std::string& fastaFile,
         if (line[0] == '>') { // Sequence name line
             // Process the previous sequence
             if (!sequence.empty()) {
-                processSequence(concatenation, sequence, minRemovalLength,
-                                startPosition, positions, seqNames, gen,
-                                totalNsRemoved, totalNsReplaced,
-                                totalOthersReplaced);
+                // Process the previous sequence
+                for (char& c : sequence) {
+                    c = replaceFunc(std::toupper(c), seedIndex);
+                    concatenation += c;
+                }
+
+                positions.emplace_back(
+                    startPosition); // push back the start position of this
+                                    // sequence
+                startPosition +=
+                    sequence
+                        .length(); // create start position for next sequence
+                sequence.clear();  // Clear the sequence for the next one
             }
             std::string description = line.substr(1);
             // get the sequence name (before the first space)
@@ -158,29 +128,26 @@ void concatenateAndTransform(const std::string& fastaFile,
     }
 
     // Process the last sequence in the file
-    if (!sequence.empty()) {
-        processSequence(concatenation, sequence, minRemovalLength,
-                        startPosition, positions, seqNames, gen, totalNsRemoved,
-                        totalNsReplaced, totalOthersReplaced);
+    for (char& c : sequence) {
+        c = replaceFunc(std::toupper(c), seedIndex);
+        concatenation += c;
     }
+    positions.emplace_back(startPosition);
+    // add the end of the text
+    positions.emplace_back(startPosition + sequence.length());
 
     // Close input file
     inputFile.close();
 
-    std::cout << "Read " + std::to_string(seqNames.size()) + " sequences"
-              << std::endl;
-    std::cout << "Concatenating sequences..." << std::endl;
+    logger.logInfo("Read " + std::to_string(seqNames.size()) + " sequences");
+    logger.logInfo("Concatenating sequences...");
+
     // Ensure the concatenation ends with a dollar sign
     if (concatenation.back() != '$') {
         concatenation += '$';
     }
 
-    std::cout << "Concatenation completed" << std::endl;
-
-    cout << "\tTotal removed Ns: " << totalNsRemoved << "\n";
-    cout << "\tTotal replaced Ns: " << totalNsReplaced << "\n";
-    cout << "\tTotal replaced non-ACGT characters: " << totalOthersReplaced
-         << "\n";
+    logger.logInfo("Concatenation completed");
 }
 
 void readText(const string& filename, string& buf) {
@@ -224,6 +191,7 @@ void readSA(const string& filename, vector<length_t>& sa, size_t saSizeHint) {
 }
 
 void sanityCheck(const string& T, vector<length_t>& sa) {
+    logger.logInfo("Performing sanity checks...");
     // check T for correctness
     if (T.back() == '\n')
         throw runtime_error("T should end with a \'$\' character, "
@@ -253,7 +221,7 @@ void sanityCheck(const string& T, vector<length_t>& sa) {
                             to_string(T.size() - 1) + "]");
 
     // check if all numbers in the suffix array are present
-    sdsl::bit_vector bv(sa.size());
+    Bitvec bv(sa.size());
     for (length_t i : sa)
         bv[i] = true;
 
@@ -265,14 +233,15 @@ void sanityCheck(const string& T, vector<length_t>& sa) {
 
     // extra check:
     //      we could check T to see if the SA correctly sorts suffixes of T
+
+    logger.logInfo("\tSanity checks OK");
 }
 
 void createAndWriteHeaderInfo(const string& baseFN,
                               const vector<string>& seqNames,
-                              const std::vector<length_t>& positions) {
-    std::cout << "Writing SAM header info for reference text to " + baseFN +
-                     ".headerSN.bin..."
-              << std::endl;
+                              const vector<length_t>& positions) {
+    logger.logInfo("Writing SAM header info for reference text to " + baseFN +
+                   ".headerSN.bin...");
     // create the header lines with these reference sequences
     std::ofstream headerStream(baseFN + ".headerSN.bin", ios::binary);
     for (length_t i = 0; i < seqNames.size(); i++) {
@@ -285,9 +254,8 @@ void createAndWriteHeaderInfo(const string& baseFN,
 void writePositionsAndSequenceNames(const string& baseFN,
                                     const vector<length_t>& positions,
                                     const vector<string>& seqNames) {
-    std::cout << "Write positions and sequence names to " + baseFN +
-                     ".pos and " + baseFN + ".sna..."
-              << std::endl;
+    logger.logInfo("Write positions and sequence names to " + baseFN +
+                   ".pos and " + baseFN + ".sna...");
     // Write the positions to disk
     std::ofstream ofs2(baseFN + ".pos", ios::binary);
     ofs2.write((char*)positions.data(), positions.size() * sizeof(length_t));
@@ -313,14 +281,11 @@ void checkTextSize(const size_t tSize) {
     }
     if ((sizeof(length_t) * 8 == 64) &&
         (tSize <= std::numeric_limits<uint32_t>::max())) {
-        std::cout
-            << "Program was compiled with 64-bit words, but the text size (" +
-                   std::to_string(tSize) +
-                   ") fits in a 32-bit word. Consider recompiling the program "
-                   "to "
-                   "improve "
-                   "performance and save memory."
-            << std::endl;
+        logger.logWarning(
+            "Program was compiled with 64-bit words, but the text size (" +
+            std::to_string(tSize) +
+            ") fits in a 32-bit word. Consider recompiling the program to "
+            "improve performance and save memory.");
     }
 }
 
@@ -335,7 +300,7 @@ void writeCharCounts(const string& baseFN, const vector<length_t>& charCounts) {
     ofstream ofs(baseFN + ".cct", ios::binary);
     ofs.write((char*)charCounts.data(), charCounts.size() * sizeof(length_t));
     ofs.close();
-    std::cout << "Wrote file " + baseFN + ".cct" << std::endl;
+    logger.logInfo("Wrote file " + baseFN + ".cct");
 }
 
 void createAlphabet(const string& T, const vector<length_t>& charCounts,
@@ -346,30 +311,29 @@ void createAlphabet(const string& T, const vector<length_t>& charCounts,
         if (count > 0)
             nUniqueChar++;
 
-    std::cout << "Text has length " + std::to_string(T.size()) << std::endl;
-    cout << "Text has " + std::to_string(nUniqueChar) + " unique characters"
-         << endl;
+    logger.logInfo("Text has length " + std::to_string(T.size()));
+    logger.logInfo("Text has " + std::to_string(nUniqueChar) +
+                   " unique characters");
 
     if (nUniqueChar > ALPHABET) {
-        std::cerr << "FATAL: the number of unique characters in the "
-                     "text exceeds the alphabet size. Please recompile "
-                     "b-move using a higher value for ALPHABET"
-                  << std::endl;
+        logger.logError("FATAL: the number of unique characters in the "
+                        "text exceeds the alphabet size. Please recompile "
+                        "b-move using a higher value for ALPHABET");
         exit(EXIT_FAILURE);
     }
 
     if (nUniqueChar < ALPHABET) {
-        std::cout << "the number of unique characters in the "
-                     "text is less than the ALPHABET size specified when "
-                     "b-move was compiled. Performance may be affected."
-                  << std::endl;
+        logger.logWarning("the number of unique characters in the "
+                          "text is less than the ALPHABET size specified when "
+                          "b-move was compiled. Performance may be affected.");
     }
 
     sigma = Alphabet<ALPHABET>(charCounts);
 }
 
 void createSuffixArray(const string& T, vector<length_t>& SA) {
-    std::cout << "Generating the suffix array using libsais..." << std::endl;
+    logger.logInfo("Generating the suffix array using libsais...");
+
     // create the suffix array with libsais
     // Convert std::string to const uint8_t*
     const uint8_t* tPtr = reinterpret_cast<const uint8_t*>(T.c_str());
@@ -389,7 +353,7 @@ void createSuffixArray(const string& T, vector<length_t>& SA) {
     // cast int64_t to length_t
     SA = vector<length_t>(suffixArray64.begin(), suffixArray64.end());
 
-    std::cout << "Suffix array generated successfully!" << std::endl;
+    logger.logInfo("Suffix array generated successfully!");
 }
 
 void createRevBWT(const string& baseFN, const string& T,
@@ -397,7 +361,7 @@ void createRevBWT(const string& baseFN, const string& T,
                   const Alphabet<ALPHABET>& sigma, string& rBWT) {
 
     // build the reverse BWT
-    std::cout << "Generating BWT of reversed text..." << std::endl;
+    logger.logInfo("Generating BWT of reversed text...");
     rBWT.resize(T.size());
     for (size_t i = 0; i < revSA.size(); i++)
         if (revSA[i] > 0)
@@ -406,27 +370,225 @@ void createRevBWT(const string& baseFN, const string& T,
             rBWT[i] = T.front();
 }
 
+void writeStringToBinaryFile(const std::string& name, const std::string& str){
+      std::ofstream outFile(name, std::ios::binary);
+    if (!outFile) {
+        std::cerr << "Error opening file for writing: " << name << std::endl;
+        return;
+    }
+
+    // First, write the size of the string
+    length_t size = str.size();
+    outFile.write(reinterpret_cast<const char*>(&size), sizeof(size));
+    // Then, write the string data itself
+    outFile.write(str.c_str(), size);
+    outFile.close();
+}
+
 void preprocessFastaFile(const std::string& fastaFile,
-                         const std::string& baseFN, string& T, bool noWriting) {
+                         const std::string& baseFN, string& T,
+                         length_t seedLength, bool noWriting) {
     std::vector<length_t> positions; // the start positions of each
     std::vector<string> seqNames;    // the name of each sequence
 
-    std::cout << "Preprocessing FASTA file " + fastaFile << std::endl;
+    logger.logInfo("Preprocessing FASTA file " + fastaFile);
 
-    concatenateAndTransform(fastaFile, T, positions, seqNames);
+    // Seeded random number generation
+    std::minstd_rand gen(42);
+
+    // Generate random seed for seeded replacement
+    std::string seed;
+    size_t seedIndex = 0;
+    for (length_t i = 0; i < seedLength; i++) {
+        seed += replaceNonACGT('N', gen, seed, seedIndex);
+    }
+
+    // Reset gen to original seed
+    gen.seed(42);
+
+    std::function<char(char, size_t&)> replaceFunc;
+
+    if (seedLength == 0) {
+
+        replaceFunc = [&gen, &seed](char c, size_t& seedIndex) -> char {
+            return replaceNonACGT(c, gen, seed, seedIndex);
+        };
+
+        logger.logInfo(
+            "Using random (non-seeded) replacement for non-ACGT characters...");
+
+    } else {
+
+        replaceFunc = [&gen, &seed](char c, size_t& seedIndex) -> char {
+            return replaceNonACGTWithSeed(c, gen, seed, seedIndex);
+        };
+
+        logger.logInfo("Using seeded replacement for non-ACGT characters, with "
+                       "a seed length of " +
+                       std::to_string(seedLength));
+    }
+
+    concatenateAndTransform(fastaFile, T, positions, seqNames, replaceFunc);
     checkTextSize(T.size());
 
-    std::cout << "Converting to uppercase..." << std::endl;
+    logger.logInfo("Converting to uppercase...");
     std::transform(T.begin(), T.end(), T.begin(), ::toupper);
 
     if (!noWriting) {
-        std::cout << "Writing concatenated uppercase sequence to disk..."
-                  << std::endl;
-        std::ofstream ofs(baseFN + ".txt");
-        ofs << T;
-        ofs.close();
+        logger.logInfo("Writing concatenated uppercase sequence to disk...");
+        writeStringToBinaryFile(baseFN + ".txt.bin", T);
     }
 
     createAndWriteHeaderInfo(baseFN, seqNames, positions);
+    writePositionsAndSequenceNames(baseFN, positions, seqNames);
+}
+
+void writeTagAndCompiledInfo(const string& baseFN) {
+    ofstream tagFile(baseFN + ".tag");
+    tagFile << BMOVE_BUILD_INDEX_TAG;
+    tagFile.close();
+    // Write the 64 or 32-bit compiled info to a file
+    ofstream compiledInfoFile(baseFN + ".comp");
+    compiledInfoFile << sizeof(length_t);
+    compiledInfoFile.close();
+}
+
+void generateBWT(const string& T, const vector<length_t>& SA, string& BWT) {
+    // build the BWT
+    logger.logInfo("Generating BWT...");
+    BWT.resize(T.size());
+    for (size_t i = 0; i < SA.size(); i++)
+        if (SA[i] > 0)
+            BWT[i] = T[SA[i] - 1];
+        else
+            BWT[i] = T.back();
+}
+
+void determineInputMode(string& baseFN, bool& txtMode, bool& fastaMode,
+                        std::string& fastaExtension) {
+
+    std::array<string, 4> allowedExtensionsFasta = {".fasta", ".fa", ".FASTA",
+                                                    ".FA"};
+    std::array<string, 4> requiredExtensionsTxt = {".txt", ".sa", ".rev.sa",
+                                                   ".rev.txt"};
+
+    // check which mode to use
+    txtMode = true;
+    fastaMode = false;
+
+    for (auto& ext : requiredExtensionsTxt) {
+        string filename = baseFN + ext;
+
+        // check if file with filename exists
+        ifstream ifs(filename);
+        if (!ifs) {
+            // file does not exist
+            txtMode = false;
+            break;
+        }
+    }
+    fastaExtension = ".fasta";
+
+    // Check if any file with allowed fasta extensions
+    // exists
+    if (!fastaMode) {
+        for (const auto& ext : allowedExtensionsFasta) {
+            std::ifstream ifs(baseFN + ext);
+            if (ifs) {
+                fastaMode = true;
+                fastaExtension = ext;
+                logger.logDeveloper("Detected fasta extension: " +
+                                    fastaExtension);
+                break;
+            }
+        }
+    }
+
+    // Check if the base filename ends with any allowed
+    // fasta extensions
+    for (const auto& ext : allowedExtensionsFasta) {
+        if (baseFN.size() >= ext.size() &&
+            std::equal(ext.rbegin(), ext.rend(), baseFN.rbegin())) {
+            fastaMode = true;
+            fastaExtension = baseFN.substr(baseFN.size() - ext.size());
+            logger.logDeveloper("Detected fasta extension: " + fastaExtension);
+            baseFN = baseFN.substr(0, baseFN.size() - ext.size());
+            break;
+        }
+    }
+
+    if (txtMode) {
+        // txt takes precedence as it has already
+        // preprocessed suffix arrays
+        fastaMode = false;
+    }
+}
+
+void writeCharCountsAndCreateAlphabet(const string& baseFN, const string& T,
+                                      Alphabet<ALPHABET>& sigma,
+                                      vector<length_t>& charCounts) {
+    // count the frequency of each characters in T
+    countChars(T, charCounts);
+    // write the character counts table
+    writeCharCounts(baseFN, charCounts);
+    // Create the alphabet
+    createAlphabet(T, charCounts, sigma);
+}
+
+void readOrCreateSAWithSanityCheck(const string& baseFN, vector<length_t>& SA,
+                                   const string& T, bool fromFasta) {
+    if (fromFasta) {
+        // create suffix array from concatenated using radixSA64
+        createSuffixArray(T, SA);
+    } else {
+        logger.logInfo("Reading " + baseFN + ".sa...");
+        readSA(baseFN + ".sa", SA, T.size());
+    }
+
+    // perform a sanity check on the suffix array
+    sanityCheck(T, SA);
+}
+
+void readOrCreateRevSAWithSanityCheck(const string& baseFN,
+                                      vector<length_t>& revSA, const string& T,
+                                      bool fromFasta) {
+    if (fromFasta) {
+        std::string revT = T;
+        std::reverse(revT.begin(), revT.end());
+
+        // create the suffix array of the reverse text
+        createSuffixArray(revT, revSA);
+        revT.clear();
+
+    } else {
+        logger.logInfo("Reading " + baseFN + ".rev.sa...");
+        readSA(baseFN + ".rev.sa", revSA, T.size());
+    }
+    // perform a sanity check on the suffix array
+    sanityCheck(T, revSA);
+}
+
+void preprocessTextMode(const string& baseFN, string& T) {
+    // read the text file from disk
+    logger.logInfo("Reading " + baseFN + ".txt...");
+    readText(baseFN + ".txt", T);
+    if (!T.empty() && T.back() != '$') {
+        T += '$';
+    }
+    checkTextSize(T.size());
+
+    logger.logInfo("Converting text to uppercase...");
+    std::transform(T.begin(), T.end(), T.begin(), ::toupper);
+
+    writeStringToBinaryFile(baseFN + ".txt.bin", T);
+
+    // create the sequence names vector, positions vector and the header
+    vector<length_t> positions = {0, (length_t)T.size()};
+    vector<string> seqNames = {baseFN};
+
+    // create the header lines with these reference sequences
+    createAndWriteHeaderInfo(baseFN, seqNames, positions);
+
+    // Write the positions to disk
     writePositionsAndSequenceNames(baseFN, positions, seqNames);
 }

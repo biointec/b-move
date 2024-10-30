@@ -17,60 +17,110 @@
  * You should have received a copy of the GNU Affero General Public License   *
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
  ******************************************************************************/
-#ifndef MOVEHELPERS_HPP
-#define MOVEHELPERS_HPP
+#ifndef MOVEROW_H
+#define MOVEROW_H
 
+#include <cstdint>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <iostream>
-#include <cstdint>
 
-#include "wordlength.h"
-#include "alphabet.h"
-#include "rindexhelpers.h"
+#include "definitions.h"
 
 #include <sdsl/int_vector.hpp>
 
 using namespace std;
-using namespace sdsl;
 
-class MoveElement {
+struct MoveRowLF {
 
-    public:
+    // Run head for this move row. 'c' in the b-move paper. Encoded.
+    uint8_t c;
 
-        // Run head for this move row. 'c' in the paper.
-        uint8_t c;
+    // The position index of the start of the input interval in the BWT. 'p' in
+    // the b-move paper.
+    length_t inputStartPos;
 
-        // The position index of the start of the input interval in the BWT.
-        length_t inputStart;
+    // The position index of the mapping of the first element of the input
+    // interval (first element of ouput interval). '\pi' in the b-move paper.
+    length_t outputStartPos;
 
-        // The position index of the mapping of the first element of the input interval (first element of ouput interval).
-        length_t outputStart;
+    // Index of the input interval containing the mapping. '\ksi' in the b-move
+    // paper.
+    length_t outputStartRun;
 
-        // Index of the input interval containing the mapping.
-        length_t mappingIndex;
+    MoveRowLF() {
+    }
 
-        MoveElement() {}
+    MoveRowLF(uint8_t c, length_t inputStartPos, length_t outputStartPos,
+            length_t outputStartRun)
+        : c(c), inputStartPos(inputStartPos), outputStartPos(outputStartPos),
+          outputStartRun(outputStartRun) {
+    }
 
-        MoveElement(uint8_t c, length_t inputStart, length_t outputStart, length_t mappingIndex): 
-            c(c), inputStart(inputStart), outputStart(outputStart), mappingIndex(mappingIndex) {}
+    MoveRowLF(ifstream& ifs) {
+        ifs.read((char*)&c, sizeof(c));
+        ifs.read((char*)&inputStartPos, sizeof(inputStartPos));
+        ifs.read((char*)&outputStartPos, sizeof(outputStartPos));
+        ifs.read((char*)&outputStartRun, sizeof(outputStartRun));
+    }
 
-        void load(ifstream& ifs) {
-            ifs.read((char*)&c, sizeof(c));
-            ifs.read((char*)&inputStart, sizeof(inputStart));
-            ifs.read((char*)&outputStart, sizeof(outputStart));
-            ifs.read((char*)&mappingIndex, sizeof(mappingIndex));
-        }
+    length_t serialize(ofstream& out) const {
+        out.write((char*)&c, sizeof(c));
+        out.write((char*)&inputStartPos, sizeof(inputStartPos));
+        out.write((char*)&outputStartPos, sizeof(outputStartPos));
+        out.write((char*)&outputStartRun, sizeof(outputStartRun));
 
-        length_t serialize(ofstream& out) const {
-            out.write((char*)&c, sizeof(c));
-            out.write((char*)&inputStart, sizeof(inputStart));
-            out.write((char*)&outputStart, sizeof(outputStart));
-            out.write((char*)&mappingIndex, sizeof(mappingIndex));
+        return sizeof(c) + sizeof(inputStartPos) + sizeof(outputStartPos) +
+               sizeof(outputStartRun);
+    }
+};
 
-            return sizeof(c) + sizeof(inputStart) + sizeof(outputStart) + sizeof(mappingIndex);
-        }
+struct MoveRowPhi {
+    // The position index of the start of the input interval in the text.
+    length_t inputStartPos;
 
+    // The position index of the mapping of the first element of the input
+    // interval (first element of ouput interval).
+    length_t outputStartPos;
+
+    // Index of the input interval containing the mapping.
+    length_t outputStartRun;
+
+    MoveRowPhi() {
+    }
+
+    /**
+     * @brief Construct a new Move Row Phi object, starting only with the input
+     * start position.
+     *
+     * @param inputStartPos The position index of the start of the input
+     * interval
+     */
+    MoveRowPhi(length_t inputStartPos, length_t outputStartPos)
+        : inputStartPos(inputStartPos), outputStartPos(outputStartPos),
+          outputStartRun(0) {
+    }
+
+    MoveRowPhi(length_t inputStartPos, length_t outputStartPos,
+               length_t outputStartRun)
+        : inputStartPos(inputStartPos), outputStartPos(outputStartPos),
+          outputStartRun(outputStartRun) {
+    }
+
+    MoveRowPhi(ifstream& ifs) {
+        ifs.read((char*)&inputStartPos, sizeof(inputStartPos));
+        ifs.read((char*)&outputStartPos, sizeof(outputStartPos));
+        ifs.read((char*)&outputStartRun, sizeof(outputStartRun));
+    }
+
+    length_t serialize(ofstream& out) const {
+        out.write((char*)&inputStartPos, sizeof(inputStartPos));
+        out.write((char*)&outputStartPos, sizeof(outputStartPos));
+        out.write((char*)&outputStartRun, sizeof(outputStartRun));
+
+        return sizeof(inputStartPos) + sizeof(outputStartPos) +
+               sizeof(outputStartRun);
+    }
 };
 
 #endif

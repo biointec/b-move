@@ -17,337 +17,330 @@
  * You should have received a copy of the GNU Affero General Public License   *
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.     *
  ******************************************************************************/
-#include "main.h"
-#include "rindex.h"
+#include "definitions.h"
+#include "logger.h"
+#include "parameters.h"
+#include "reads.h"
 #include "rsearchstrategy.h"
 
+#include "bmove.h" // for BMove
 
-void doBench(const vector<ReadRecord>& reads, RIndex& index, 
-             RSearchStrategy* strategy, const string& outputfile, length_t ED,
-             const std::string& basefile) {
+#include <algorithm>
+#include <chrono>
+#include <set>
+#include <sstream> // used for splitting strings
+#include <string.h>
 
-    size_t totalUniqueMatches = 0, sizes = 0, mappedReads = 0;
+using namespace std;
 
-    cout << "Benchmarking with " << strategy->getName()
-         << " strategy for max distance " << ED << " with "
-         << strategy->getPartitioningStrategy() << " partitioning and using "
-         << strategy->getDistanceMetric() << " distance " << endl;
-    cout.precision(2);
+string getFileExt(const string& s) {
 
-    bool report = outputfile != "";
-
-    vector<vector<TextOcc>> matchesPerRead = {};
-    if (report) {
-        matchesPerRead.reserve(reads.size());
+    size_t i = s.rfind('.', s.length());
+    if (i != string::npos) {
+        return (s.substr(i + 1, s.length() - i));
     }
 
+    return ("");
+}
+
+bool containsNonACGT(const std::string& str) {
+    for (char c : str) {
+        // Check if the character is not one of A, C, G, or T
+        if (c != 'A' && c != 'C' && c != 'G' && c != 'T') {
+            return true; // Found a non-ACGT character
+        }
+    }
+    return false; // All characters are A, C, G, or T
+}
+
+vector<ReadBundle> getReads(const string& file) {
+    vector<ReadBundle> reads;
+    reads.reserve(200000);
+
+    const auto& extension = getFileExt(file);
+
+    bool fasta =
+        (extension == "FASTA") || (extension == "fasta") || (extension == "fa");
+    bool fastq = (extension == "fq") || (extension == "fastq");
+
+    ifstream iFile(file.c_str());
+    if (!iFile) {
+        throw runtime_error("Cannot open file " + file);
+    }
+    if (!fasta && !fastq) {
+        // this is a not readable
+
+        throw runtime_error("extension " + extension +
+                            " is not a valid extension for the reads file");
+    } else if (fasta) {
+        // fasta file
+        string read = "";
+        string id = "";
+        string qual = ""; // empty quality string for fasta
+        string line;
+
+        while (getline(iFile, line)) {
+            if (line.empty()) {
+                continue; // Skip empty lines
+            }
+
+            if (line[0] == '>' || line[0] == '@') {
+                // This is an ID line
+                if (!id.empty()) {
+                    // If we already have data, process it and clear
+                    reads.emplace_back(ReadBundle(Read(id, read, qual)));
+
+                    id.clear();
+                    read.clear();
+                }
+            } else {
+                // This is a sequence line
+                read += line;
+            }
+        }
+
+        // Process the last entry if it exists
+        if (!id.empty()) {
+            reads.emplace_back(ReadBundle(Read(id, read, qual)));
+        }
+    } else {
+        // fastQ
+        string read = "";
+        string id = "";
+        string qual = "";
+        string plusLine = ""; // Skip the '+' line
+        string line;
+
+        while (getline(iFile, id) && getline(iFile, read) &&
+               getline(iFile, plusLine) && // Skip the '+' line
+               getline(iFile, qual)) {
+            if (!id.empty() && id[0] != '@') {
+                throw runtime_error("File " + file +
+                                    "doesn't appear to be in FastQ format");
+            }
+
+            if (id.back() == '\n') {
+                id.pop_back();
+            }
+
+            if (!read.empty() && read.back() == '\n') {
+                read.pop_back();
+            }
+
+            assert(id.size() > 1);
+
+            reads.emplace_back(ReadBundle(Read(id, read, qual)));
+
+            id.clear(), read.clear(), qual.clear();
+        }
+    }
+
+    return reads;
+}
+
+void writeToOutput(const string& file, const vector<vector<TextOcc>>& mPerRead,
+                   const std::string& baseFile,
+                   const std::string& commandLineParameters) {
+    stringstream ss;
+
+    ss << "Writing to output file " << file << " ...";
+    logger.logInfo(ss);
+    ofstream f2;
+    f2.open(file);
+
+    f2 << "@HD\tVN:1.6"
+       << "\t"
+       << "SO:queryname"
+       << "\n";
+
+    f2 << "@PG\tID:b-move" << to_string(VERSION_NUMBER_BMOVE) << "."
+       << to_string(SUB_VERSION_NUMBER_BMOVE)
+       << "\tPN:b-move\tCL:" << commandLineParameters << "\n";
+
+    ifstream ifs(baseFile + ".headerSN.bin", std::ios::binary);
+
+    if (!ifs) {
+        logger.logError("Unable to open the header file.");
+    } else {
+        std::string line;
+        while (getline(ifs, line)) {
+            f2 << line << "\n";
+        }
+    }
+
+    ifs.close();
+
+    for (unsigned int i = 0; i < mPerRead.size(); i++) {
+
+        for (auto m : mPerRead[i]) {
+            f2 << m.getOutputLine() << "\n";
+        }
+    }
+
+    f2.close();
+}
+
+double findMedian(vector<length_t> a, int n) {
+
+    // If size of the arr[] is even
+    if (n % 2 == 0) {
+
+        // Applying nth_element
+        // on n/2th index
+        nth_element(a.begin(), a.begin() + n / 2, a.end());
+
+        // Applying nth_element
+        // on (n-1)/2 th index
+        nth_element(a.begin(), a.begin() + (n - 1) / 2, a.end());
+
+        // Find the average of value at
+        // index N/2 and (N-1)/2
+        return (double)(a[(n - 1) / 2] + a[n / 2]) / 2.0;
+    }
+
+    // If size of the arr[] is odd
+    else {
+
+        // Applying nth_element
+        // on n/2
+        nth_element(a.begin(), a.begin() + n / 2, a.end());
+
+        // Value at index (N/2)th
+        // is the median
+        return (double)a[n / 2];
+    }
+}
+
+void doBench(vector<ReadBundle>& reads, IndexInterface& mapper,
+             std::unique_ptr<SearchStrategy>& strategy,
+             const string& outputFile, length_t distanceOrIdentity,
+             const std::string& baseFile,
+             const std::string& commandLineParameters) {
+
+    stringstream ss;
+
+    const auto& mMode = strategy->getMappingModeString();
+
+    ss << "Benchmarking with " << strategy->getName() << " strategy\n";
+    ss << "\tMapping mode: " << mMode << "\n";
+    if (strategy->getMappingModeString() == "BEST") {
+        ss << "\tMin identity: " << distanceOrIdentity << "\n";
+    } else {
+        ss << "\tMax distance: " << distanceOrIdentity << "\n";
+    }
+    ss << "\tPartitioning strategy: " << strategy->getPartitioningStrategy()
+       << "\n";
+    ss << "\tDistance metric: " << strategy->getDistanceMetric() << "\n";
+
+    logger.logInfo(ss);
+
+    ss.precision(2);
+
+    vector<vector<TextOcc>> matchesPerRead = {};
+#ifndef NO_REPORT
+    matchesPerRead.reserve(reads.size());
+#endif
+
     std::vector<length_t> numberMatchesPerRead;
+#ifndef NO_REPORT
     numberMatchesPerRead.reserve(reads.size());
+#endif
 
     Counters counters;
-    counters.resetCounters();
 
     auto start = chrono::high_resolution_clock::now();
-    for (unsigned int i = 0; i < reads.size(); i += 2) {
+    for (unsigned int i = 0; i < reads.size(); i += 1) {
 
-        const auto& readrecord = reads[i];
-        const auto& revReadrecord = reads[i + 1];
+        auto& bundle = reads[i];
 
-        const string& id = readrecord.id;
-        const string& read = readrecord.read;
-        const string& revCompl = revReadrecord.read;
-        const string& qual = readrecord.qual;
-        const string& revQual = revReadrecord.qual;
-
-        if (((i >> 1) - 1) % (8192 / (1 << ED)) == 0) {
-            cout << "Progress: " << i / 2 << "/" << reads.size() / 2 << "\r";
+        if (i % 1024 == 0) {
+            // Progress printed to cout
+            // is this necessary??
+            cout << "Progress: " << i << "/" << reads.size() << "\r";
             cout.flush();
         }
 
-        sizes += read.size();
+        counters.inc(Counters::NUMBER_OF_READS);
 
-        auto matches =
-            strategy->matchApprox(read, ED, counters, id, qual, false, report);
-        totalUniqueMatches += matches.size();
+        Counters recordCounters;
+        std::vector<TextOcc> matches;
 
-        // do the same for the reverse complement
-        vector<TextOcc> matchesRevCompl =
-            strategy->matchApprox(revCompl, ED, counters, id, revQual, true, report);
-        totalUniqueMatches += matchesRevCompl.size();
+        strategy->matchApprox(bundle, distanceOrIdentity, recordCounters,
+                              matches);
+
+        bool mapped = !matches.empty() && matches.front().isValid();
+
+        counters.inc(Counters::TOTAL_UNIQUE_MATCHES,
+                     recordCounters.get(Counters::DROPPED_UNIQUE_MATCHES) +
+                         ((mapped) ? (matches.size()) : 0));
 
         // keep track of the number of mapped reads
-        mappedReads += !(matchesRevCompl.empty() && matches.empty());
+        counters.inc(Counters::MAPPED_READS, mapped);
 
-        if(report){
-            matchesPerRead.emplace_back(matches);
-            matchesPerRead.emplace_back(matchesRevCompl);
-        }
+        counters.addCounters(recordCounters);
 
-        numberMatchesPerRead.emplace_back(matches.size() +
-                                          matchesRevCompl.size());
+#ifndef NO_REPORT
+        matchesPerRead.emplace_back(matches);
+        numberMatchesPerRead.emplace_back(matches.size());
+#endif
     }
 
     auto finish = chrono::high_resolution_clock::now();
     chrono::duration<double> elapsed = finish - start;
-    cout << "Progress: " << reads.size() << "/" << reads.size() << "\n";
-    cout << "Results for " << strategy->getName() << endl;
+    ss << "Progress: " << reads.size() << "/" << reads.size();
+    logger.logInfo(ss);
+    ss << "Results for " << strategy->getName();
+    logger.logInfo(ss);
 
-    cout << "Total duration: " << fixed << elapsed.count() << "s\n";
-    cout << "Average no. nodes: " << counters.nodeCounter / (reads.size() / 2.0)
-         << endl;
-    cout << "Total no. Nodes: " << counters.nodeCounter << "\n";
-
-    cout << "Average no. unique matches: "
-         << totalUniqueMatches / (reads.size() / 2.0) << endl;
-    cout << "Total no. unique matches: " << totalUniqueMatches << "\n";
-    cout << "Average no. reported matches "
-         << counters.totalReportedPositions / (reads.size() / 2.0) << endl;
-    cout << "Total no. reported matches: " << counters.totalReportedPositions
-         << "\n";
-    cout << "Mapped reads: " << mappedReads << endl;
-    cout << "Median number of occurrences per read "
-         << findMedian(numberMatchesPerRead, numberMatchesPerRead.size())
-         << endl;
-
-    cout << "Average size of reads: " << sizes / (reads.size() / 2.0) << endl;
-
-    if(report){
-        writeToOutput(outputfile, matchesPerRead, reads, index.getTextSize(), basefile);
-    }
-}
-
-void showUsage() {
-    cout << "Usage: ./bmove-locate [options] basefilename readfile.[ext]\n\n"
-            "[options]\n"
-            "  -e  --max-errors       maximum edit distance [default = 0]\n"
-            "  -p  --partitioning     Add flag to do uniform/static/dynamic \n"
-            "                            partitioning [default = dynamic]\n"
-            "  -m  --metric           Add flag to set distance metric \n"
-            "                            (edit/hamming) [default = edit]\n"
-            "  -ks --kmer-size        The size of the seeds for dynamic \n"
-            "                            partitioning [default = 10]\n"
-            "  -o  --output           The name of the outputfile if writing \n"
-            "                            out the matches is desired. This file \n"
-            "                            must be in .sam format. [default = \"\", \n"
-            "                            no output file for benchmarking purposes]\n"
-            "  -ss --search-scheme    Choose the search scheme [default = kuch1]\n"
-            "                            options:\n"
-            "                            kuch1    Kucherov k + 1\n"
-            "                            kuch2    Kucherov k + 2\n"
-            "                            kianfar  Optimal Kianfar scheme\n"
-            "                            manbest  Manual best improvement for \n"
-            "                                     kianfar scheme (only for ed = 4)\n"
-            "                            pigeon   Pigeon hole scheme\n"
-            "                            01*0     01*0 search scheme\n"
-            "                            custom   Custom search scheme, the next \n"
-            "                                     parameter should be a path to \n"
-            "                                     the folder containing this search \n"
-            "                                     scheme\n"
-            "                            multiple Multiple search scheme, the next \n"
-            "                                     parameter should be a path to \n"
-            "                                     the folder containing the different \n"
-            "                                     search schemes to choose from with \n"
-            "                                     dynamic selection.\n\n"
-            "[ext]\n"
-            "  One of the following: fq, fastq, FASTA, fasta, fa\n\n"
-            "Following input files are required:\n"
-            "  <base filename>.cct:      character counts table\n"
-            "  <base filename>.move:     move table of T\n"
-            "  <base filename>.rev.move: move table of the reverse of T\n"
-            "  <base filename>.smpf:     first-of-run samples of the SA\n"
-            "  <base filename>.rev.smpf: first-of-run samples of the SA of the \n"
-            "                              reverse of T\n"
-            "  <base filename>.smpl:     last-of-run samples of the SA\n"
-            "  <base filename>.rev.smpl: last-of-run samples of the SA of the \n"
-            "                              reverse of T\n"
-            "  <base filename>.prdf:     predecessor structure of first-of-run samples\n"
-            "  <base filename>.prdl:     predecessor structure of last-of-run samples\n"
-            "  <base filename>.ftr:      mapping between first-of-run predecessor \n"
-            "                              structure and run indices\n"
-            "  <base filename>.ltr:      mapping between last-of-run predecessor \n"
-            "                              structure and run indices\n"
-            "  <base filename>.plcp:     PLCP array\n\n";
-
-    cout << "Report bugs to jan.fostier@ugent.be" << endl;
-
+    ss << "Total duration: " << fixed << elapsed.count() << "s";
+    logger.logInfo(ss);
+    counters.reportStatistics(SINGLE_END);
+#ifndef NO_REPORT
+    writeToOutput(outputFile, matchesPerRead, baseFile, commandLineParameters);
+#endif
 }
 
 int main(int argc, char* argv[]) {
 
-    std::cout << "Using " << LENGTH_TYPE_NAME << std::endl;
-
-    int requiredArguments = 2; // baseFile of files and file containing reads
-
-    if (argc < requiredArguments) {
-        cerr << "Insufficient number of arguments" << endl;
-        showUsage();
-        return EXIT_FAILURE;
-    }
     if (argc == 2 && strcmp("help", argv[1]) == 0) {
-        showUsage();
+        Parameters::printHelp();
         return EXIT_SUCCESS;
     }
 
-    cout << "Welcome to the bidirectional move structure!\n";
+    int requiredArguments = 4; // baseFile of files and file containing reads
 
-    string maxED = "0";
-    string searchscheme = "kuch1";
-    string customFile = "";
-
-    string kmerSize = "10";
-    string outputfile = "";
-
-    PartitionStrategy pStrat = DYNAMIC;
-    DistanceMetric metric = EDITOPTIMIZED;
-
-    bool printMemUsage = false;
-
-    // process optional arguments
-    for (int i = 1; i < argc - requiredArguments; i++) {
-        const string& arg = argv[i];
-
-        if (arg == "-p" || arg == "--partitioning") {
-            if (i + 1 < argc) {
-                string s = argv[++i];
-                if (s == "uniform") {
-                    pStrat = UNIFORM;
-                } else if (s == "dynamic") {
-                    pStrat = DYNAMIC;
-                } else if (s == "static") {
-                    pStrat = STATIC;
-                } else {
-                    throw runtime_error(
-                        s + " is not a partitioning option\nOptions are: "
-                            "uniform, static, dynamic");
-                }
-            } else {
-                throw runtime_error(arg + " takes 1 argument as input");
-            }
-        } else if (arg == "-e" || arg == "--max-errors") {
-            if (i + 1 < argc) {
-                maxED = argv[++i];
-            }
-        } else if (arg == "-ss" || arg == "--search-scheme") {
-            if (i + 1 < argc) {
-                searchscheme = argv[++i];
-                if (find(schemes.begin(), schemes.end(), searchscheme) ==
-                    schemes.end()) {
-                    throw runtime_error(searchscheme +
-                                        " is not on option as search scheme");
-                }
-                if (searchscheme == "custom" || searchscheme == "multiple") {
-                    if (i + 1 < argc) {
-                        customFile = argv[++i];
-                    } else {
-                        throw runtime_error("custom/multiple search scheme "
-                                            "takes a folder as argument");
-                    }
-                }
-            } else {
-                throw runtime_error(arg + " takes 1 argument as input");
-            }
-        } else if (arg == "-m" || arg == "--metric") {
-            if (i + 1 < argc) {
-                string s = argv[++i];
-                if (s == "edit") {
-                    metric = EDITOPTIMIZED;
-                } else if (s == "hamming") {
-                    metric = HAMMING;
-                } else {
-                    throw runtime_error(s +
-                                        " is not a metric option\nOptions are: "
-                                        "edit, hamming");
-                }
-            } else {
-                throw runtime_error(arg + " takes 1 argument as input");
-            }
-        } else if (arg == "-ks" || arg == "--kmer-size") {
-            if (i + 1 < argc) {
-                kmerSize = argv[++i];
-            } else {
-                throw runtime_error(arg + " takes 1 argument as input");
-            }
-        } else if (arg == "-o" || arg == "--output") {
-            if (i + 1 < argc) {
-                outputfile = argv[++i];
-            } else {
-                throw runtime_error(arg + " takes 1 argument as input");
-            }
-        } // else if (arg == "-mu" || arg == "--mem-usage") {
-        //     printMemUsage = true;
-        // }
-        else {
-            cerr << "Unknown argument: " << arg << " is not an option" << endl;
-            return false;
-        }
-    }
-
-    length_t ed = stoi(maxED);
-    if (ed < 0 || ed > MAX_K) {
-        cerr << ed << " is not allowed as maxED should be in [0, " << MAX_K
-             << "]" << endl;
-
+    if (argc < requiredArguments) {
+        logger.logError("Insufficient number of arguments\n");
+        Parameters::printHelp();
         return EXIT_FAILURE;
     }
 
-    length_t kMerSize = stoi(kmerSize);
+    Parameters params = Parameters::processOptionalArguments(argc, argv);
 
-    if (ed > 4 && searchscheme != "custom" && searchscheme != "multiple" &&
-        searchscheme != "naive") {
-        throw runtime_error(
-            "Hard-coded search schemes are only available for "
-            "up to 4 errors. Use a custom search scheme instead.");
+    if (params.logFile != "") {
+        logger.setLogFile(params.logFile);
     }
 
-    if (ed != 4 && searchscheme == "manbest") {
-        throw runtime_error("manbest only supports 4 allowed errors");
-    }
+    logger.logInfo("Welcome to b-move!\n");
+    logger.logInfo("Using " + string(LENGTH_TYPE_NAME) + "\n");
 
-    string baseFile = argv[argc - 2];
-    string readsFile = argv[argc - 1];
+    BMove index(params.base, true, params.kmerSize);
+    logger.logInfo("Reading in reads from " + params.firstReadsFile + "\n");
 
-    RIndex index = RIndex(baseFile, true, kMerSize);
-
-    if (printMemUsage) {
-        index.printMemSize();
-    }
-
-    cout << "Reading in reads from " << readsFile << endl;
-    vector<ReadRecord> reads;
+    vector<ReadBundle> reads;
     try {
-        reads = getReads(readsFile);
+        reads = getReads(params.firstReadsFile);
     } catch (const exception& e) {
         string er = e.what();
         er += " Did you provide a valid reads file?";
         throw runtime_error(er);
     }
 
-    RSearchStrategy* strategy;
-    if (searchscheme == "kuch1") {
-        strategy = new RKucherovKplus1(index, pStrat, metric);
-    } else if (searchscheme == "kuch2") {
-        strategy = new RKucherovKplus2(index, pStrat, metric);
-    } else if (searchscheme == "kianfar") {
-        strategy = new ROptimalKianfar(index, pStrat, metric);
-    } else if (searchscheme == "manbest") {
-        strategy = new RManBestStrategy(index, pStrat, metric);
-    } else if (searchscheme == "01*0") {
-        strategy = new RO1StarSearchStrategy(index, pStrat, metric);
-    } else if (searchscheme == "pigeon") {
-        strategy = new RPigeonHoleSearchStrategy(index, pStrat, metric);
-    } else if (searchscheme == "custom") {
-        strategy = new CustomRSearchStrategy(index, customFile, pStrat, metric);
-    } else if (searchscheme == "multiple") {
-        strategy =
-            new RMultipleSchemesStrategy(index, customFile, pStrat, metric);
-    } else if (searchscheme == "naive") {
-        strategy = new RNaiveBackTrackingStrategy(index, pStrat, metric);
-    } else {
-        // should not get here
-        throw runtime_error(searchscheme + " is not on option as search scheme");
-    }
+    auto strategy = params.createStrategy(index);
 
-    doBench(reads, index, strategy, outputfile, ed, baseFile);
-    delete strategy;
-    cout << "Bye...\n";
+    doBench(reads, index, strategy, params.outputFile,
+            params.getMaxOrIdentity(), params.base, params.command);
+
+    logger.logInfo("Bye...!");
+    return 0;
 }

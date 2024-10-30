@@ -19,17 +19,12 @@
 #ifndef UTIL_H
 #define UTIL_H
 
-#include <chrono>
-#include <cmath>
-#include <ctime>
-#include <fstream>
-#include <map>
-#include <mutex>
-#include <string>
-#include <vector>
-#include <cstdint>
-
-
+#include <algorithm> // for max, abs
+#include <chrono>    // for system_clock, time_point
+#include <ctime>     // for size_t
+#include <fstream>   // for ifstream, ios
+#include <mutex>     // for mutex
+#include <string>    // for string
 // ============================================================================
 // DEFINITIONS
 // ============================================================================
@@ -127,7 +122,7 @@ class Util {
 
     /**
      * Stop the chronometer and return a human readable string
-     * @return A human readable string containg the elapsed time
+     * @return A human readable string containing the elapsed time
      */
     static std::string stopChronoStr() {
         return humanTime(stopChrono());
@@ -174,29 +169,6 @@ class Util {
             return 0;
         return 100.0 * double(nom) / double(den);
     }
-
-    static unsigned char bitsize(unsigned long int x){
-        if (x == 0) return 1;
-        return 64 - __builtin_clzll(x);
-    }
 };
-
-// ============================================================================
-// OTHER UTILITY FUNCTIONS
-// ============================================================================
-
-const size_t MAX_VECTOR_OUTPUT = 20;
-
-/**
- * output operator for vectors, useful for testing
- * only prints max MAX_VECTOR_OUTPUT elements!
-*/
-template <typename T>
-std::ostream& operator<<(std::ostream& os, const std::vector<T>& v) {
-    for (size_t i = 0; i < std::min(v.size(), MAX_VECTOR_OUTPUT); i++) {
-        os << v[i] << " ";
-    }
-    return os;
-}
 
 #endif

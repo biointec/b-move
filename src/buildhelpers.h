@@ -21,45 +21,37 @@
 #ifndef BUILDHELPERS_H
 #define BUILDHELPERS_H
 
-#include "alphabet.h" // for Alphabet
+#include "alphabet.h"    // for Alphabet
+#include "definitions.h" // for length_tr
 
-#include <algorithm>  // for copy, max, transform, max_element, min_...
-#include <array>      // for array
-#include <cctype>     // for toupper, tolower
-#include <exception>  // for exception
-#include <fstream>    // for ifstream, ofstream
-#include <functional> // Add this header for std::function
-#include <iomanip>    // for operator<<, setprecision
-#include <iostream>   // for operator<<, ifstream, ofstream, basic_o...
-#include <random>     // for minstd_rand, uniform_int_distribution
-#include <sdsl/int_vector.hpp>
-#include <sstream>
-#include <stdexcept> // for runtime_error, invalid_argument
-#include <stdlib.h>  // for size_t, exit, EXIT_FAILURE, EXIT_SUCCESS
-#include <string>    // for string, operator+, basic_string, allocator
-#include <time.h>    // for clock, clock_t
-#include <vector>    // for vector
-
-using namespace std;
+#include <functional> // for function
+#include <random>     // for minstd_rand
+#include <stdlib.h>   // for size_t
+#include <string>     // for string
+#include <vector>     // for vector
 
 // Function to replace non-ACGT characters with a random ACGT character
 char replaceNonACGT(char original, std::minstd_rand& gen,
-                    length_t& replacementCounter);
+                    const std::string& seed, size_t& seedIndex);
+
+// Function to replace non-ACGT characters with a seeded ACGT character
+char replaceNonACGTWithSeed(char original, std::minstd_rand& gen,
+                            const std::string& seed, size_t& seedIndex);
 
 /**
  * @brief Concatenates and transforms the sequences from a FASTA file.
  *
  * This function reads a FASTA file and concatenates the sequences into a single
- * string. It also replaces non-ACGT characters with a random ACGT character.
- * The start positions of each sequence and the sequence names are stored in
- * separate vectors. The resulting concatenated string is terminated with a '$'
- * character.
+ * std::string. It also replaces non-ACGT characters with a random ACGT
+ * character. The start positions of each sequence and the sequence names are
+ * stored in separate std::vectors. The resulting concatenated std::string is
+ * terminated with a '$' character.
  *
  * @param fastaFile The path to the FASTA file.
- * @param concatenation The resulting concatenated string. (output)
- * @param positions The vector to store the start positions of each sequence.
- * (output)
- * @param seqNames The vector to store the sequence names. (output)
+ * @param concatenation The resulting concatenated std::string. (output)
+ * @param positions The std::vector to store the start positions of each
+ * sequence. (output)
+ * @param seqNames The std::vector to store the sequence names. (output)
  * @param replaceFunc The function to use for replacing non-ACGT characters.
  * @param expectedNumber The expected number of sequences in the FASTA file.
  * Default is 12000.
@@ -68,46 +60,83 @@ void concatenateAndTransform(const std::string& fastaFile,
                              std::string& concatenation,
                              std::vector<length_t>& positions,
                              std::vector<std::string>& seqNames,
+                             std::function<char(char, size_t&)> replaceFunc,
                              length_t expectedNumber = 12000);
 
 /**
- * @brief Read the contents of a text file into a string buffer.
+ * @brief Read the contents of a text file into a std::string buffer.
  *
  */
-void readText(const string& filename, string& buf);
+void readText(const std::string& filename, std::string& buf);
 
-void readSATextMode(const string& filename, vector<length_t>& sa,
+void readSATextMode(const std::string& filename, std::vector<length_t>& sa,
                     size_t saSizeHint);
 
-void readSA(const string& filename, vector<length_t>& sa, size_t saSizeHint);
+void readSA(const std::string& filename, std::vector<length_t>& sa,
+            size_t saSizeHint);
 
-void sanityCheck(const string& T, vector<length_t>& sa);
+void sanityCheck(const std::string& T, std::vector<length_t>& sa);
 
-void createAndWriteHeaderInfo(const string& baseFN,
-                              const vector<string>& seqNames,
+void createAndWriteHeaderInfo(const std::string& baseFN,
+                              const std::vector<std::string>& seqNames,
                               const std::vector<length_t>& positions);
 
-void writePositionsAndSequenceNames(const string& baseFN,
-                                    const vector<length_t>& positions,
-                                    const vector<string>& seqNames);
+void writePositionsAndSequenceNames(const std::string& baseFN,
+                                    const std::vector<length_t>& positions,
+                                    const std::vector<std::string>& seqNames);
 
 void checkTextSize(const size_t tSize);
 
-void countChars(const string& T, vector<length_t>& charCounts);
+void countChars(const std::string& T, std::vector<length_t>& charCounts);
 
-void writeCharCounts(const string& baseFN, const vector<length_t>& charCounts);
+void writeCharCounts(const std::string& baseFN,
+                     const std::vector<length_t>& charCounts);
 
-void createAlphabet(const string& T, const vector<length_t>& charCounts,
+void createAlphabet(const std::string& T,
+                    const std::vector<length_t>& charCounts,
                     Alphabet<ALPHABET>& sigma);
 
-void createSuffixArray(const string& T, vector<length_t>& SA);
+void createSuffixArray(const std::string& T, std::vector<length_t>& SA);
 
-void createRevBWT(const string& baseFN, const string& T,
-                  const vector<length_t>& revSA,
-                  const Alphabet<ALPHABET>& sigma, string& rBWT);
+void createRevBWT(const std::string& baseFN, const std::string& T,
+                  const std::vector<length_t>& revSA,
+                  const Alphabet<ALPHABET>& sigma, std::string& rBWT);
 
 void preprocessFastaFile(const std::string& fastaFile,
-                         const std::string& baseFN, string& T,
-                         bool noWriting = false);
+                         const std::string& baseFN, std::string& T,
+                         length_t seedLength, bool noWriting = false);
 
+void writeTagAndCompiledInfo(const std::string& baseFN);
+
+void generateBWT(const std::string& T, const std::vector<length_t>& SA,
+                 std::string& BWT);
+
+/**
+ * @brief Determine the input mode for the index construction. The input can
+ * either be a txt file with created suffix arrays or a fasta file.
+ * @param baseFN The base file name of the input file.
+ * @param textMode A boolean indicating whether the input is in text mode.
+ * (output)
+ * @param fastaMode A boolean indicating whether the input is in fasta mode.
+ * (output)
+ * @param fastaExtension The extension of the fasta file if it is in fastaMode.
+ * (output)
+ */
+void determineInputMode(std::string& baseFN, bool& textMode, bool& fastaMode,
+                        std::string& fastaExtension);
+
+void writeCharCountsAndCreateAlphabet(const std::string& baseFN,
+                                      const std::string& T,
+                                      Alphabet<ALPHABET>& sigma,
+                                      std::vector<length_t>& charCounts);
+
+void readOrCreateSAWithSanityCheck(const std::string& baseFN,
+                                   std::vector<length_t>& SA,
+                                   const std::string& T, bool fromFasta);
+
+void readOrCreateRevSAWithSanityCheck(const std::string& baseFN,
+                                      std::vector<length_t>& SA,
+                                      const std::string& T, bool fromFasta);
+
+void preprocessTextMode(const std::string& baseFN, std::string& T);
 #endif

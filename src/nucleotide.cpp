@@ -17,6 +17,7 @@
  ******************************************************************************/
 
 #include "nucleotide.h"
+#include <iosfwd> // for std
 
 using namespace std;
 
