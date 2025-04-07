@@ -2,7 +2,7 @@
 
 ## References
 
-We obtained all complete E. coli genomes from the NCBI RefSeq database using the following command:
+We obtained all complete E. coli genomes from the NCBI RefSeq database using [`ncbi-genome-download`](https://github.com/kblin/ncbi-genome-download):
 
 ```bash
 ncbi-genome-download -F fasta -l complete -g Escherichia bacteria

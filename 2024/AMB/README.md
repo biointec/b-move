@@ -39,3 +39,5 @@ The benchmarking process involves aligning sequence data using three different t
      - `-S columba` (section 4.4) or `-S pigeon` (section 4.2, 4.3): Use the most optimized custom search scheme or the pigeonhole principle.
      - If the output SAM file is required for `bmove-locate`: `-o <filename>.sam`
 
+## Detailed benchmark scripts
+More detailed benchmark commands can be found in the [`Scripts`](Scripts) folder.
