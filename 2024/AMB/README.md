@@ -15,7 +15,7 @@ The benchmarking process involves aligning sequence data using three different t
 ## Tools and Commands
 
 1. **Columba**:
-   - Version: [v2.0-beta](https://github.com/biointec/columba/tree/columba-2.0-beta)
+   - Version: [v2.0](https://github.com/biointec/columba/releases/tag/v2.0)
    - Command: `columba` (section 4.4)
    - Parameters:
      - `-a all`: report all alignments up to the maximum number of errors.
